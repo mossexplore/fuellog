@@ -22,7 +22,7 @@ type Vars = {
 const COOKIE = 'fuellog_session';
 const CHALLENGE_COOKIE = 'fuellog_2fa';
 const CHALLENGE_MINUTES = 5;
-const ISSUER = '燃油日志';
+const ISSUER = '加油记';
 // 未登录即可访问的认证接口（登录两步流程）
 const PUBLIC_PATHS = new Set(['/api/login', '/api/login/verify', '/api/2fa/enroll']);
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();

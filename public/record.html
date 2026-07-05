@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>记一笔 · 燃油日志</title>
+<title>记一笔 · 加油记</title>
 <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="/">⛽ 燃油日志</a>
+  <a class="brand" href="/">⛽ 加油记</a>
   <nav>
     <a href="/">仪表盘</a>
     <a href="/records.html">记录</a>
@@ -216,7 +216,7 @@ $('paid_amount').addEventListener('input', () => { paidTouched = true; });
 
 (async () => {
   if (editId) {
-    document.title = '编辑记录 · 燃油日志';
+    document.title = '编辑记录 · 加油记';
     $('submitBtn').textContent = '保存修改';
     const r = await api('/api/records/' + editId);
     $('refuel_date').value = r.refuel_date;
