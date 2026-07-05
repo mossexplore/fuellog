@@ -59,6 +59,10 @@ npm run dev
 
 ## Cloudflare 部署
 
+详细的新环境部署、D1/R2 初始化、自定义域名和后续更新流程见：[Cloudflare Workers 部署操作指南](docs/cloudflare-worker-deploy-guide.md)。
+
+如果希望主要通过 Cloudflare 网页控制台和 GitHub 网页完成部署，见：[Cloudflare 网页控制台部署指南](docs/cloudflare-dashboard-deploy-guide.md)。
+
 1. 登录 Cloudflare：
 
 ```bash
