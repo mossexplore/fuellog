@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+.claude/
+.dev.vars
+.env
+.env.*
+*.local
+.DS_Store
+user.sql
+*.seed.sql
+需求设计说明书.md

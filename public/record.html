@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记一笔 · 燃油日志</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">⛽ 燃油日志</a>
+  <nav>
+    <a href="/">仪表盘</a>
+    <a href="/records.html">记录</a>
+    <a href="#" onclick="logout();return false;">登出</a>
+  </nav>
+</header>
+
+<div class="container">
+  <div class="card">
+    <form id="recordForm">
+      <div class="ocr-box">
+        <button type="button" class="btn ghost block" id="ocrBtn">📷 上传截图自动识别</button>
+        <input type="file" id="ocrInput" accept="image/*" hidden>
+        <div class="ocr-status" id="ocrStatus"></div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="refuel_date">加油日期</label>
+          <input type="date" id="refuel_date" required>
+        </div>
+        <div class="form-group">
+          <label for="refuel_time">加油时间</label>
+          <input type="time" id="refuel_time" required>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="odometer">当前里程（公里）</label>
+        <input type="number" id="odometer" inputmode="decimal" step="0.1" min="0" required placeholder="仪表盘累计里程">
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="unit_price">机器显示油价（元/升）</label>
+          <input type="number" id="unit_price" inputmode="decimal" step="0.01" min="0" required>
+        </div>
+        <div class="form-group">
+          <label for="volume">加油量（升）</label>
+          <input type="number" id="volume" inputmode="decimal" step="0.01" min="0" required>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="machine_amount">机器显示金额（元）<span class="hint">自动计算</span></label>
+          <input type="number" id="machine_amount" inputmode="decimal" step="0.01" min="0" required>
+        </div>
+        <div class="form-group">
+          <label for="paid_amount">实付金额（元）</label>
+          <input type="number" id="paid_amount" inputmode="decimal" step="0.01" min="0" required>
+        </div>
+      </div>
+
+      <div class="switch-row">
+        <label for="is_full" style="margin:0;color:var(--text)">是否加满跳枪</label>
+        <label class="switch">
+          <input type="checkbox" id="is_full" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="fuel_type">油品标号</label>
+          <select id="fuel_type">
+            <option>92#</option><option>95#</option><option>98#</option><option>0#柴油</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="station">加油站（可选）</label>
+          <input type="text" id="station" maxlength="50">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="note">备注（可选）</label>
+        <input type="text" id="note" maxlength="200">
+      </div>
+
+      <div class="form-group">
+        <label>账单/截图（可选，可多选）</label>
+        <div class="uploader">
+          <label class="upload-btn" for="fileInput">📎 选择文件…</label>
+          <input type="file" id="fileInput" multiple hidden>
+          <span class="hint" id="uploadHint">单个文件 ≤ 10MB，最多 9 个</span>
+        </div>
+        <div class="attach-grid" id="attachGrid"></div>
+      </div>
+
+      <div class="error" id="error"></div>
+      <button class="btn block" type="submit" id="submitBtn">保存</button>
+    </form>
+  </div>
+</div>
+
+<script src="/assets/app.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const editId = new URLSearchParams(location.search).get('id');
+let paidTouched = false;   // 实付金额是否被手动改过
+let machineTouched = false; // 机器金额是否被手动微调过
+
+// ---------- 附件上传 ----------
+const MAX_ATTACH = 9, MAX_SIZE = 10 * 1024 * 1024;
+let attachments = []; // [{id, filename, content_type, size}]
+
+function fmtSize(n) {
+  return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+}
+function renderAttachments() {
+  const grid = $('attachGrid');
+  grid.innerHTML = '';
+  for (const a of attachments) {
+    const cell = document.createElement('div');
+    cell.className = 'attach-cell';
+    const src = '/api/attachments/' + a.id;
+    if (a.content_type && a.content_type.startsWith('image/')) {
+      cell.innerHTML = `<a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt=""></a>`;
+    } else {
+      cell.innerHTML = `<a class="file-ico" href="${src}" target="_blank" rel="noopener" title="${a.filename}">
+        <span class="ico">📄</span><span class="fn">${a.filename}</span></a>`;
+    }
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'attach-del'; del.textContent = '×'; del.title = '删除';
+    del.onclick = () => removeAttachment(a.id);
+    cell.appendChild(del);
+    grid.appendChild(cell);
+  }
+  const hint = $('uploadHint');
+  hint.textContent = attachments.length
+    ? `已添加 ${attachments.length}/${MAX_ATTACH} 个`
+    : '单个文件 ≤ 10MB，最多 9 个';
+}
+async function uploadFiles(files) {
+  const err = $('error'); err.textContent = '';
+  for (const file of files) {
+    if (attachments.length >= MAX_ATTACH) { err.textContent = `最多上传 ${MAX_ATTACH} 个附件`; break; }
+    if (file.size > MAX_SIZE) { err.textContent = `「${file.name}」超过 10MB，已跳过`; continue; }
+    const cell = document.createElement('div');
+    cell.className = 'attach-cell uploading';
+    cell.textContent = '上传中…';
+    $('attachGrid').appendChild(cell);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const meta = await api('/api/attachments', { method: 'POST', body: fd });
+      attachments.push(meta);
+    } catch (ex) {
+      err.textContent = `「${file.name}」上传失败：${ex.message}`;
+    }
+    renderAttachments();
+  }
+}
+async function removeAttachment(id) {
+  try { await api('/api/attachments/' + id, { method: 'DELETE' }); } catch (ex) { /* 忽略：孤儿会被清理 */ }
+  attachments = attachments.filter((a) => a.id !== id);
+  renderAttachments();
+}
+$('fileInput').addEventListener('change', (e) => {
+  uploadFiles([...e.target.files]);
+  e.target.value = ''; // 允许重复选择同名文件
+});
+
+// ---------- 供截图识别模块（module 脚本）调用 ----------
+// 把识别出的字段回填到表单，返回填充的字段数
+window.applyOcrFields = function (f) {
+  const keys = ['refuel_date', 'refuel_time', 'unit_price', 'volume', 'machine_amount', 'paid_amount', 'fuel_type', 'station'];
+  let filled = 0;
+  for (const k of keys) {
+    if (f[k] == null || f[k] === '') continue;
+    const el = $(k);
+    if (!el) continue;
+    el.value = f[k];
+    el.classList.add('ocr-filled');
+    setTimeout(() => el.classList.remove('ocr-filled'), 3000);
+    filled++;
+  }
+  // 识别值已直接给出金额，禁用后续自动联动覆盖
+  if (f.machine_amount != null) machineTouched = true;
+  if (f.paid_amount != null) paidTouched = true;
+  return filled;
+};
+// 把识别用的原图加入附件列表
+window.addRecognizedAttachment = function (meta) {
+  if (attachments.length < MAX_ATTACH) { attachments.push(meta); renderAttachments(); }
+};
+
+function recalcMachine() {
+  if (machineTouched) return;
+  const p = parseFloat($('unit_price').value), v = parseFloat($('volume').value);
+  if (p > 0 && v > 0) {
+    const amt = (Math.round(p * v * 100) / 100).toFixed(2);
+    $('machine_amount').value = amt;
+    if (!paidTouched) $('paid_amount').value = amt;
+  }
+}
+$('unit_price').addEventListener('input', () => { machineTouched = false; recalcMachine(); });
+$('volume').addEventListener('input', () => { machineTouched = false; recalcMachine(); });
+$('machine_amount').addEventListener('input', () => {
+  machineTouched = true;
+  if (!paidTouched) $('paid_amount').value = $('machine_amount').value;
+});
+$('paid_amount').addEventListener('input', () => { paidTouched = true; });
+
+(async () => {
+  if (editId) {
+    document.title = '编辑记录 · 燃油日志';
+    $('submitBtn').textContent = '保存修改';
+    const r = await api('/api/records/' + editId);
+    $('refuel_date').value = r.refuel_date;
+    $('refuel_time').value = r.refuel_time;
+    $('odometer').value = r.odometer;
+    $('unit_price').value = r.unit_price;
+    $('volume').value = r.volume;
+    $('machine_amount').value = r.machine_amount;
+    $('paid_amount').value = r.paid_amount;
+    $('is_full').checked = !!r.is_full;
+    $('fuel_type').value = r.fuel_type || '92#';
+    $('station').value = r.station || '';
+    $('note').value = r.note || '';
+    attachments = r.attachments || [];
+    renderAttachments();
+    paidTouched = machineTouched = true; // 编辑时不自动覆盖已有值
+  } else {
+    const now = new Date();
+    $('refuel_date').value = now.toISOString().slice(0, 10);
+    $('refuel_time').value = now.toTimeString().slice(0, 5);
+    // 油价默认带出最近一条记录
+    const { items } = await api('/api/records?page=1&size=1');
+    if (items.length) {
+      $('unit_price').value = items[0].unit_price;
+      $('fuel_type').value = items[0].fuel_type || '92#';
+    }
+  }
+})();
+
+document.getElementById('recordForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('error'); err.textContent = '';
+  const body = {
+    refuel_date: $('refuel_date').value,
+    refuel_time: $('refuel_time').value,
+    odometer: parseFloat($('odometer').value),
+    unit_price: parseFloat($('unit_price').value),
+    volume: parseFloat($('volume').value),
+    machine_amount: parseFloat($('machine_amount').value),
+    paid_amount: parseFloat($('paid_amount').value),
+    is_full: $('is_full').checked,
+    fuel_type: $('fuel_type').value,
+    station: $('station').value.trim() || null,
+    note: $('note').value.trim() || null,
+    attachment_ids: attachments.map((a) => a.id),
+  };
+  // 机器金额与 单价×油量 偏差 > 0.1 元时提示确认
+  const expected = Math.round(body.unit_price * body.volume * 100) / 100;
+  if (Math.abs(body.machine_amount - expected) > 0.1) {
+    if (!confirm(`机器显示金额 ${body.machine_amount.toFixed(2)} 元与「油价×加油量」计算值 ${expected.toFixed(2)} 元偏差较大，确认保存？`)) return;
+  }
+  $('submitBtn').disabled = true;
+  try {
+    if (editId) {
+      await api('/api/records/' + editId, { method: 'PUT', body: JSON.stringify(body) });
+    } else {
+      await api('/api/records', { method: 'POST', body: JSON.stringify(body) });
+    }
+    location.href = '/records.html';
+  } catch (ex) {
+    err.textContent = ex.message;
+    $('submitBtn').disabled = false;
+  }
+});
+</script>
+
+<script type="module">
+import { recognizeImage } from '/assets/ocr.js';
+const ocrBtn = document.getElementById('ocrBtn');
+const ocrInput = document.getElementById('ocrInput');
+const ocrStatus = document.getElementById('ocrStatus');
+const setS = (m, cls) => { ocrStatus.textContent = m; ocrStatus.className = 'ocr-status' + (cls ? ' ' + cls : ''); };
+
+ocrBtn.addEventListener('click', () => ocrInput.click());
+ocrInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  ocrBtn.disabled = true;
+  try {
+    const { fields } = await recognizeImage(file, (m) => setS(m));
+    const n = window.applyOcrFields(fields);
+    setS(n ? `已识别并填充 ${n} 项，请核对（当前里程需手动填写）` : '未识别到加油信息，请手动填写', n ? 'ok' : 'warn');
+    // 识别成功与否都把原图存为附件（复用附件上传）
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      const meta = await window.api('/api/attachments', { method: 'POST', body: fd });
+      window.addRecognizedAttachment(meta);
+    } catch (_) { /* 附件失败不影响识别结果 */ }
+  } catch (ex) {
+    setS('识别失败：' + (ex && ex.message ? ex.message : ex) + '，可手动填写', 'warn');
+  } finally {
+    ocrBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

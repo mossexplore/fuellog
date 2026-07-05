@@ -1,0 +1,21 @@
+{
+  "name": "fuellog",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init:local": "wrangler d1 execute fuellog --local --file=schema.sql",
+    "db:init:remote": "wrangler d1 execute fuellog --remote --file=schema.sql",
+    "user:create": "node scripts/create-user.mjs"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250601.0",
+    "typescript": "^5.5.0",
+    "wrangler": "^4.0.0"
+  }
+}

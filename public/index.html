@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>仪表盘 · 燃油日志</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">⛽ 燃油日志</a>
+  <nav>
+    <a href="/" class="active">仪表盘</a>
+    <a href="/records.html">记录</a>
+    <a href="#" onclick="logout();return false;">登出</a>
+  </nav>
+</header>
+
+<div class="container wide">
+  <div class="metrics" id="metrics">
+    <div class="metric hero">
+      <div class="value" id="m-consumption">—</div>
+      <div class="label">平均油耗（升/百公里）</div>
+    </div>
+    <div class="metric"><div class="value" id="m-cost-km">—</div><div class="label">平均油费（元/公里）</div></div>
+    <div class="metric"><div class="value" id="m-last-seg">—</div><div class="label">最近一箱油耗</div></div>
+    <div class="metric"><div class="value" id="m-distance">—</div><div class="label">累计行程（公里）</div></div>
+    <div class="metric"><div class="value" id="m-paid">—</div><div class="label">累计油费（元）</div></div>
+    <div class="metric"><div class="value" id="m-volume">—</div><div class="label">累计加油量（升）</div></div>
+    <div class="metric"><div class="value" id="m-count">—</div><div class="label">加油次数</div></div>
+    <div class="metric"><div class="value" id="m-avg-dist">—</div><div class="label">平均里程（公里/箱）</div></div>
+    <div class="metric"><div class="value" id="m-avg-price">—</div><div class="label">平均油价（元/升）</div></div>
+    <div class="metric"><div class="value" id="m-year-dist">—</div><div class="label" id="m-year-dist-label">今年里程（公里）</div></div>
+    <div class="metric"><div class="value" id="m-year-paid">—</div><div class="label" id="m-year-paid-label">今年油费（元）</div></div>
+  </div>
+
+  <p class="hint" id="guide" style="display:none"></p>
+
+  <div class="charts">
+    <div class="chart-card wide">
+      <h2>① 分段油耗趋势（升/百公里）</h2>
+      <div class="chart-box"><canvas id="consumptionChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h2>② 每公里油费（元/公里）</h2>
+      <div class="chart-box"><canvas id="costPerKmChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h2>③ 油价趋势（元/升）</h2>
+      <div class="chart-box"><canvas id="priceChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h2>④ 月度油费（元）</h2>
+      <div class="chart-box"><canvas id="monthlyChart"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h2>⑤ 月度里程（公里）</h2>
+      <div class="chart-box"><canvas id="monthlyDistChart"></canvas></div>
+    </div>
+    <div class="chart-card wide">
+      <h2>⑥ 年度对比</h2>
+      <div class="chart-box"><canvas id="yearlyChart"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<a class="fab" href="/record.html" title="记一笔">+</a>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="/assets/app.js"></script>
+<script>
+(async () => {
+  const s = await api('/api/stats');
+  const set = (id, v, digits) => document.getElementById(id).textContent = fmt(v, digits);
+  set('m-consumption', s.avg_consumption_l_per_100km);
+  set('m-cost-km', s.avg_cost_yuan_per_km);
+  set('m-last-seg', s.last_segment_consumption);
+  set('m-distance', s.total_distance_km, 0);
+  set('m-paid', s.total_paid_yuan);
+  set('m-volume', s.total_volume_l, 1);
+  set('m-count', s.refuel_count, 0);
+  set('m-avg-dist', s.avg_distance_per_refuel_km, 0);
+  set('m-avg-price', s.avg_price_yuan_per_l);
+
+  // 今年里程 / 今年油费：从月度数组按当前年份聚合
+  const thisYear = String(new Date().getFullYear());
+  const yearSum = (arr, key) => arr.filter(x => x.month.startsWith(thisYear)).reduce((t, x) => t + x[key], 0);
+  set('m-year-dist', yearSum(s.monthly_distance, 'distance_km'), 0);
+  set('m-year-paid', yearSum(s.monthly_cost, 'paid_yuan'));
+  document.getElementById('m-year-dist-label').textContent = `今年里程（公里，${thisYear}）`;
+  document.getElementById('m-year-paid-label').textContent = `今年油费（元，${thisYear}）`;
+
+  const guide = document.getElementById('guide');
+  if (s.refuel_count === 0) {
+    guide.textContent = '还没有记录，点击右下角「+」记录第一次加油。';
+    guide.style.display = 'block';
+  } else if (s.avg_consumption_l_per_100km == null) {
+    guide.textContent = '平均油耗需要至少两次「加满跳枪」的记录才能计算，再记录一次加满即可。';
+    guide.style.display = 'block';
+  }
+
+  const gridColor = 'rgba(0,0,0,.06)';
+  const baseOpts = (yTicks = 5) => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      y: { grid: { color: gridColor }, ticks: { maxTicksLimit: yTicks } },
+      x: { grid: { display: false }, ticks: { maxRotation: 0, minRotation: 0, maxTicksLimit: 6, autoSkip: true } },
+    },
+  });
+  const line = (id, labels, data, color, bg, opts = {}) => new Chart(document.getElementById(id), {
+    type: 'line',
+    data: { labels, datasets: [{ data, borderColor: color, backgroundColor: bg, fill: !!bg, tension: .3, pointRadius: labels.length > 40 ? 0 : 3, borderWidth: 2 }] },
+    options: { ...baseOpts(), ...opts },
+  });
+  const bar = (id, labels, data, color) => new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: color }] },
+    options: baseOpts(),
+  });
+
+  // ① 分段油耗（通栏主图）
+  line('consumptionChart', s.segments.map(x => x.date), s.segments.map(x => x.consumption), '#2563eb', 'rgba(37,99,235,.12)');
+  // ② 每公里油费
+  line('costPerKmChart', s.segments.map(x => x.date), s.segments.map(x => x.cost_per_km), '#7c3aed', 'rgba(124,58,237,.10)');
+  // ③ 油价趋势
+  line('priceChart', s.price_trend.map(x => x.date), s.price_trend.map(x => x.price), '#059669', 'rgba(5,150,105,.10)');
+  // ④ 月度油费
+  bar('monthlyChart', s.monthly_cost.map(x => x.month), s.monthly_cost.map(x => x.paid_yuan), '#60a5fa');
+  // ⑤ 月度里程
+  bar('monthlyDistChart', s.monthly_distance.map(x => x.month), s.monthly_distance.map(x => x.distance_km), '#34d399');
+
+  // ⑥ 年度对比：油费/里程用左轴（柱），油耗用右轴（线）
+  const years = [...new Set(s.monthly_cost.map(x => x.month.slice(0, 4)))].sort();
+  const sumBy = (arr, key) => years.map(y => Math.round(arr.filter(x => x.month.startsWith(y)).reduce((t, x) => t + x[key], 0)));
+  const yearCost = sumBy(s.monthly_cost, 'paid_yuan');
+  const yearDist = sumBy(s.monthly_distance, 'distance_km');
+  const yearCons = years.map(y => {
+    const segs = s.segments.filter(x => x.date.startsWith(y));
+    const fuel = segs.reduce((t, x) => t + x.volume_l, 0), dist = segs.reduce((t, x) => t + x.distance_km, 0);
+    return dist > 0 ? Math.round(fuel / dist * 1000) / 10 : null;
+  });
+  new Chart(document.getElementById('yearlyChart'), {
+    data: {
+      labels: years,
+      datasets: [
+        { type: 'bar', label: '油费（元）', data: yearCost, backgroundColor: '#60a5fa', yAxisID: 'y' },
+        { type: 'bar', label: '里程（公里）', data: yearDist, backgroundColor: '#34d399', yAxisID: 'y' },
+        { type: 'line', label: '油耗（升/百公里）', data: yearCons, borderColor: '#f59e0b', backgroundColor: '#f59e0b', yAxisID: 'y1', tension: .3 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 12 } } } },
+      scales: {
+        y: { grid: { color: gridColor }, ticks: { maxTicksLimit: 5 } },
+        y1: { position: 'right', grid: { display: false }, suggestedMin: 0, ticks: { maxTicksLimit: 5 } },
+        x: { grid: { display: false }, ticks: { maxRotation: 0, minRotation: 0, autoSkip: true } },
+      },
+    },
+  });
+})();
+</script>
+</body>
+</html>
