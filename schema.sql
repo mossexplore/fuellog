@@ -82,6 +82,16 @@ CREATE TABLE IF NOT EXISTS backup_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_backup_codes_user ON backup_codes (user_id);
 
+-- 图形验证码（登录前置），2 分钟过期、一次性
+CREATE TABLE IF NOT EXISTS captchas (
+    id         TEXT PRIMARY KEY,
+    answer     TEXT NOT NULL,             -- 小写答案
+    ip         TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_captchas_ip ON captchas (ip, created_at);
+
 -- 登录失败限速表
 CREATE TABLE IF NOT EXISTS login_attempts (
     ip           TEXT NOT NULL,

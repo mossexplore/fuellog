@@ -21,6 +21,13 @@
         <label for="password">密码</label>
         <input type="password" id="password" autocomplete="current-password" required>
       </div>
+      <div class="form-group">
+        <label for="captchaInput">验证码</label>
+        <div class="captcha-row">
+          <button type="button" class="captcha-img" id="captchaImg" title="点击刷新" aria-label="刷新验证码"></button>
+          <input type="text" id="captchaInput" inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="4" placeholder="输入图中字符" required>
+        </div>
+      </div>
       <div class="error" id="pwError"></div>
       <button class="btn block" type="submit" id="pwBtn">登录</button>
     </form>
@@ -74,6 +81,21 @@
 const $ = (id) => document.getElementById(id);
 const show = (id) => { for (const s of ['pwForm','totpForm','enrollForm','backupStep']) $(s).style.display = s === id ? '' : 'none'; };
 
+// 图形验证码：加载 / 刷新
+let captchaId = '';
+async function loadCaptcha() {
+  $('captchaInput').value = '';
+  try {
+    const r = await api('/api/captcha');
+    captchaId = r.id;
+    $('captchaImg').innerHTML = r.svg;
+  } catch (ex) {
+    $('captchaImg').textContent = '点击重试';
+  }
+}
+$('captchaImg').addEventListener('click', loadCaptcha);
+loadCaptcha();
+
 // 第一步：账号密码
 $('pwForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -81,6 +103,7 @@ $('pwForm').addEventListener('submit', async (e) => {
   try {
     const r = await api('/api/login', { method: 'POST', body: JSON.stringify({
       username: $('username').value.trim(), password: $('password').value,
+      captcha_id: captchaId, captcha_text: $('captchaInput').value.trim(),
     }) });
     if (r.step === 'totp') {
       show('totpForm'); $('totpCode').focus();
@@ -95,6 +118,7 @@ $('pwForm').addEventListener('submit', async (e) => {
     }
   } catch (ex) {
     $('pwError').textContent = ex.message;
+    loadCaptcha(); // 验证码一次性，失败后换新图
   } finally {
     $('pwBtn').disabled = false;
   }
@@ -113,7 +137,7 @@ $('totpForm').addEventListener('submit', async (e) => {
     $('totpBtn').disabled = false;
   }
 });
-$('totpBack').addEventListener('click', () => { show('pwForm'); $('username').focus(); });
+$('totpBack').addEventListener('click', () => { show('pwForm'); loadCaptcha(); $('username').focus(); });
 
 // 第二步 B：确认绑定
 $('enrollForm').addEventListener('submit', async (e) => {

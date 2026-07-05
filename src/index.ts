@@ -6,6 +6,7 @@ import {
   generateBackupCodes, hashBackupCode, verifyBackupCode,
 } from './auth';
 import { computeStats, type FuelRecord } from './stats';
+import { newCaptcha } from './captcha';
 
 type Env = {
   DB: D1Database;
@@ -24,7 +25,7 @@ const CHALLENGE_COOKIE = 'fuellog_2fa';
 const CHALLENGE_MINUTES = 5;
 const ISSUER = '加油记';
 // 未登录即可访问的认证接口（登录两步流程）
-const PUBLIC_PATHS = new Set(['/api/login', '/api/login/verify', '/api/2fa/enroll']);
+const PUBLIC_PATHS = new Set(['/api/login', '/api/login/verify', '/api/2fa/enroll', '/api/captcha']);
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
 // ---------- 认证中间件（登录相关接口除外） ----------
@@ -65,6 +66,38 @@ async function logAttempt(c: any, ip: string): Promise<void> {
   await c.env.DB.prepare(`INSERT INTO login_attempts (ip, attempted_at) VALUES (?, datetime('now'))`).bind(ip).run();
 }
 
+// 生成图形验证码。每次登录前置，防大规模脚本刷登录。
+app.get('/api/captcha', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') ?? 'local';
+  // 防刷图：同一 IP 60 秒内最多 30 张
+  const { cnt } = (await c.env.DB.prepare(
+    `SELECT COUNT(*) AS cnt FROM captchas WHERE ip = ? AND created_at > datetime('now', '-60 seconds')`
+  ).bind(ip).first<{ cnt: number }>())!;
+  if (cnt >= 30) return c.json({ error: '请求过于频繁，请稍后再试' }, 429);
+
+  const { answer, svg } = newCaptcha();
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO captchas (id, answer, ip, expires_at) VALUES (?, ?, ?, datetime('now', '+2 minutes'))`
+  ).bind(id, answer.toLowerCase(), ip).run();
+  // 顺手清理过期验证码
+  c.executionCtx.waitUntil(
+    c.env.DB.prepare(`DELETE FROM captchas WHERE expires_at <= datetime('now')`).run()
+  );
+  return c.json({ id, svg });
+});
+
+// 校验图形验证码：命中即删（一次性），无论对错都不可复用
+async function checkCaptcha(c: any, id?: string, text?: string): Promise<boolean> {
+  if (!id || !text) return false;
+  const row = await c.env.DB.prepare(
+    `SELECT answer FROM captchas WHERE id = ? AND expires_at > datetime('now')`
+  ).bind(id).first<{ answer: string }>();
+  await c.env.DB.prepare('DELETE FROM captchas WHERE id = ?').bind(id).run();
+  if (!row) return false;
+  return row.answer === String(text).trim().toLowerCase();
+}
+
 // 通过全部验证后发放正式会话，并清理临时状态
 async function issueSession(c: any, userId: number): Promise<void> {
   const token = newSessionToken();
@@ -94,9 +127,15 @@ app.post('/api/login', async (c) => {
   const ip = c.req.header('cf-connecting-ip') ?? 'local';
   if (await rateLimited(c, ip)) return c.json({ error: '尝试过于频繁，请 1 分钟后再试' }, 429);
 
-  const body = await c.req.json<{ username?: string; password?: string }>().catch(() => ({} as any));
-  const { username, password } = body;
+  const body = await c.req.json<{ username?: string; password?: string; captcha_id?: string; captcha_text?: string }>().catch(() => ({} as any));
+  const { username, password, captcha_id, captcha_text } = body;
   const fail = async () => { await logAttempt(c, ip); return c.json({ error: '用户名或密码错误' }, 401); };
+
+  // 先验图形验证码（错误也计入限速）
+  if (!(await checkCaptcha(c, captcha_id, captcha_text))) {
+    await logAttempt(c, ip);
+    return c.json({ error: '验证码错误或已过期', captcha: true }, 400);
+  }
   if (!username || !password) return fail();
 
   const user = await c.env.DB.prepare(
