@@ -170,6 +170,12 @@ h2.section { font-size: 16px; margin: 22px 0 10px; }
 .chart-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 14px; }
 .login-wrap { max-width: 380px; margin: 12vh auto 0; padding: 16px; }
 .login-wrap h1 { text-align: center; }
+.auth-alt {
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
+  display: grid; gap: 10px; text-align: center;
+}
+.auth-alt span { color: var(--muted); font-size: 13px; }
+.auth-alt .btn { padding: 10px 14px; font-size: 15px; }
 
 /* 两步验证 */
 .qr-box { display: flex; justify-content: center; padding: 8px 0 4px; }

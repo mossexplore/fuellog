@@ -30,7 +30,10 @@
       </div>
       <div class="error" id="pwError"></div>
       <button class="btn block" type="submit" id="pwBtn">登录</button>
-      <p class="hint" style="text-align:center;margin:12px 0 0"><a href="/register.html">注册新账号</a></p>
+      <div class="auth-alt">
+        <span>还没有账号？</span>
+        <a class="btn ghost block" href="/register.html">创建账号</a>
+      </div>
     </form>
 
     <!-- 第二步 A：输入验证码（已绑定） -->
@@ -106,7 +109,9 @@ $('pwForm').addEventListener('submit', async (e) => {
       username: $('username').value.trim(), password: $('password').value,
       captcha_id: captchaId, captcha_text: $('captchaInput').value.trim(),
     }) });
-    if (r.step === 'totp') {
+    if (r.ok) {
+      location.href = '/';
+    } else if (r.step === 'totp') {
       show('totpForm'); $('totpCode').focus();
     } else if (r.step === 'enroll') {
       show('enrollForm');
