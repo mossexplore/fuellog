@@ -131,6 +131,12 @@ input.ocr-filled, select.ocr-filled { background: #fff7cc; transition: backgroun
 }
 
 /* 记录列表 */
+.records-tools {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 12px; padding: 12px; background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.records-tools .hint { min-height: 18px; }
 .record-item { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 10px; }
 .record-item .line1 { display: flex; justify-content: space-between; align-items: baseline; }
 .record-item .date { font-weight: 600; }

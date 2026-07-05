@@ -237,6 +237,11 @@ interface RecordInput {
   attachment_ids?: number[];
 }
 
+interface ImportInput {
+  records?: RecordInput[];
+  replace?: boolean;
+}
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 单文件 10MB
 const MAX_ATTACHMENTS = 9;              // 单条记录最多 9 个附件
 
@@ -253,9 +258,56 @@ function validateRecord(b: Partial<RecordInput>): string | null {
   return null;
 }
 
+function recordDateTime(b: RecordInput): string {
+  return `${b.refuel_date} ${b.refuel_time}`;
+}
+
+function sortRecords(records: RecordInput[]): RecordInput[] {
+  return [...records].sort((a, b) => recordDateTime(a).localeCompare(recordDateTime(b)));
+}
+
+function validateImportRecords(records: RecordInput[]): string | null {
+  if (!Array.isArray(records) || !records.length) return '没有可导入的记录';
+  if (records.length > 1000) return '单次最多导入 1000 条记录';
+  const sorted = sortRecords(records);
+  for (let i = 0; i < sorted.length; i++) {
+    const err = validateRecord(sorted[i]);
+    if (err) return `第 ${i + 1} 条记录无效：${err}`;
+    if (i > 0 && sorted[i].odometer < sorted[i - 1].odometer) {
+      return `第 ${i + 1} 条记录里程不能小于上一条记录`;
+    }
+  }
+  return null;
+}
+
+async function deleteVehicleData(env: Env, vehicleId: number): Promise<{ records: number; attachments: number }> {
+  const { results: atts } = await env.DB.prepare(
+    'SELECT r2_key FROM attachments WHERE vehicle_id = ?'
+  ).bind(vehicleId).all<{ r2_key: string }>();
+  if (atts.length) {
+    await env.R2.delete(atts.map((a) => a.r2_key));
+  }
+  const delRecords = await env.DB.prepare('DELETE FROM fuel_records WHERE vehicle_id = ?').bind(vehicleId).run();
+  await env.DB.prepare('DELETE FROM attachments WHERE vehicle_id = ?').bind(vehicleId).run();
+  return { records: delRecords.meta.changes ?? 0, attachments: atts.length };
+}
+
+function insertRecordStmt(db: D1Database, vehicleId: number, b: RecordInput) {
+  return db.prepare(
+    `INSERT INTO fuel_records
+       (vehicle_id, refuel_date, refuel_time, odometer, unit_price, volume,
+        machine_amount, paid_amount, is_full, fuel_type, station, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    vehicleId, b.refuel_date, b.refuel_time, b.odometer, b.unit_price, b.volume,
+    b.machine_amount, b.paid_amount, b.is_full ? 1 : 0,
+    b.fuel_type ?? '92#', b.station ?? null, b.note ?? null
+  );
+}
+
 // 里程单调性：按时间排序后，本条里程必须 ≥ 前一条且 ≤ 后一条
 async function checkOdometer(db: D1Database, vehicleId: number, b: RecordInput, excludeId?: number): Promise<string | null> {
-  const dt = `${b.refuel_date} ${b.refuel_time}`;
+  const dt = recordDateTime(b);
   const notSelf = excludeId ? 'AND id != ?' : '';
   const bindPrev: unknown[] = excludeId ? [vehicleId, dt, excludeId] : [vehicleId, dt];
   const prev = await db.prepare(
@@ -333,19 +385,45 @@ app.post('/api/records', async (c) => {
   const odoErr = await checkOdometer(c.env.DB, vehicleId, b);
   if (odoErr) return c.json({ error: odoErr }, 422);
 
-  const res = await c.env.DB.prepare(
-    `INSERT INTO fuel_records
-       (vehicle_id, refuel_date, refuel_time, odometer, unit_price, volume,
-        machine_amount, paid_amount, is_full, fuel_type, station, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    vehicleId, b.refuel_date, b.refuel_time, b.odometer, b.unit_price, b.volume,
-    b.machine_amount, b.paid_amount, b.is_full ? 1 : 0,
-    b.fuel_type ?? '92#', b.station ?? null, b.note ?? null
-  ).run();
+  const res = await insertRecordStmt(c.env.DB, vehicleId, b).run();
   const recordId = res.meta.last_row_id as number;
   await linkAttachments(c.env.DB, vehicleId, recordId, b.attachment_ids);
   return c.json({ ok: true, id: recordId }, 201);
+});
+
+app.post('/api/records/import', async (c) => {
+  const body = await c.req.json<ImportInput>().catch(() => null);
+  if (!body || !Array.isArray(body.records)) return c.json({ error: '请求体格式错误' }, 400);
+  const err = validateImportRecords(body.records);
+  if (err) return c.json({ error: err }, 422);
+
+  const vehicleId = c.get('vehicleId');
+  const records = sortRecords(body.records);
+  const existing = await c.env.DB.prepare(
+    `SELECT odometer, refuel_date, refuel_time FROM fuel_records WHERE vehicle_id = ?
+     ORDER BY refuel_date ASC, refuel_time ASC, id ASC`
+  ).bind(vehicleId).all<{ odometer: number; refuel_date: string; refuel_time: string }>();
+  const combined = [
+    ...(body.replace ? [] : existing.results.map((r) => ({ dt: `${r.refuel_date} ${r.refuel_time}`, odometer: r.odometer }))),
+    ...records.map((r) => ({ dt: recordDateTime(r), odometer: r.odometer })),
+  ].sort((a, b) => a.dt.localeCompare(b.dt));
+  for (let i = 1; i < combined.length; i++) {
+    if (combined[i].odometer < combined[i - 1].odometer) {
+      return c.json({ error: '导入后里程序列不单调，请先清空或检查历史数据' }, 422);
+    }
+  }
+
+  const stmts = records.map((r) => insertRecordStmt(c.env.DB, vehicleId, r));
+  if (body.replace) {
+    await deleteVehicleData(c.env, vehicleId);
+  }
+  await c.env.DB.batch(stmts);
+  return c.json({ ok: true, imported: records.length });
+});
+
+app.delete('/api/records', async (c) => {
+  const result = await deleteVehicleData(c.env, c.get('vehicleId'));
+  return c.json({ ok: true, deleted: result.records, attachments: result.attachments });
 });
 
 // 将草稿附件（record_id IS NULL）绑定到指定记录；同时把该记录已有但本次未提交的附件解绑为孤儿（供后续清理）

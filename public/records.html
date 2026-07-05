@@ -18,6 +18,14 @@
 </header>
 
 <div class="container">
+  <div class="records-tools">
+    <label class="btn ghost sm" for="csvInput">导入CSV</label>
+    <input type="file" id="csvInput" accept=".csv,text/csv" hidden>
+    <label class="btn ghost sm" for="tencentInput">导入腾讯出行XLSX</label>
+    <input type="file" id="tencentInput" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
+    <button class="btn danger sm" id="clearAllBtn" type="button">一键清空</button>
+    <span class="hint" id="importStatus"></span>
+  </div>
   <div id="list"></div>
   <div class="pager" id="pager" style="display:none">
     <button class="btn ghost sm" id="prevBtn">上一页</button>
@@ -28,16 +36,22 @@
 
 <a class="fab" href="/record.html" title="记一笔">+</a>
 
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="/assets/app.js"></script>
 <script>
 let page = 1;
 const SIZE = 20;
+const $ = (id) => document.getElementById(id);
+const h = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[ch]));
 
 async function load() {
   const data = await api(`/api/records?page=${page}&size=${SIZE}`);
-  const list = document.getElementById('list');
+  const list = $('list');
   if (!data.total) {
     list.innerHTML = '<div class="empty">还没有加油记录，点击右下角「+」开始记录</div>';
+    $('pager').style.display = 'none';
     return;
   }
   list.innerHTML = data.items.map(r => `
@@ -50,7 +64,7 @@ async function load() {
         <span>里程 ${fmt(r.odometer, 0)} km${r.distance_delta != null ? `（+${fmt(r.distance_delta, 0)}）` : ''}</span>
         <span>${fmt(r.volume)} 升 × ${fmt(r.unit_price)} 元</span>
         <span>机显 ¥${fmt(r.machine_amount)}</span>
-        ${r.station ? `<span>${r.station}</span>` : ''}
+        ${r.station ? `<span>${h(r.station)}</span>` : ''}
       </div>
       ${r.segment_consumption != null ? `
       <div class="seg-metrics">
@@ -60,23 +74,23 @@ async function load() {
       <div class="line3">
         <span>
           <span class="badge ${r.is_full ? 'full' : 'partial'}">${r.is_full ? '加满' : '未加满'}</span>
-          <span class="hint">${r.fuel_type || ''}</span>
+          <span class="hint">${h(r.fuel_type || '')}</span>
         </span>
         <span>
           <a class="btn ghost sm" href="/record.html?id=${r.id}">编辑</a>
           <button class="btn danger sm" onclick="del(${r.id}, '${r.refuel_date}')">删除</button>
         </span>
       </div>
-      ${r.note ? `<div class="hint" style="margin-top:6px">备注：${r.note}</div>` : ''}
+      ${r.note ? `<div class="hint" style="margin-top:6px">备注：${h(r.note)}</div>` : ''}
     </div>
   `).join('');
 
   const pages = Math.ceil(data.total / SIZE);
-  const pager = document.getElementById('pager');
+  const pager = $('pager');
   pager.style.display = pages > 1 ? 'flex' : 'none';
-  document.getElementById('pageInfo').textContent = `${page} / ${pages} 页（共 ${data.total} 条）`;
-  document.getElementById('prevBtn').disabled = page <= 1;
-  document.getElementById('nextBtn').disabled = page >= pages;
+  $('pageInfo').textContent = `${page} / ${pages} 页（共 ${data.total} 条）`;
+  $('prevBtn').disabled = page <= 1;
+  $('nextBtn').disabled = page >= pages;
 }
 
 async function del(id, date) {
@@ -90,8 +104,173 @@ async function del(id, date) {
   }
 }
 
-document.getElementById('prevBtn').addEventListener('click', () => { page--; load(); });
-document.getElementById('nextBtn').addEventListener('click', () => { page++; load(); });
+function setImportStatus(message) {
+  $('importStatus').textContent = message || '';
+}
+
+function parseNumber(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const m = String(v).replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+function normalizeDate(v) {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  const s = String(v ?? '').trim();
+  let m = s.match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  return '';
+}
+
+function normalizeTime(v) {
+  const s = String(v ?? '').trim();
+  const m = s.match(/(\d{1,2}):(\d{2})/);
+  return m ? `${m[1].padStart(2, '0')}:${m[2]}` : '00:00';
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [], cell = '', quote = false;
+  const src = text.replace(/^\uFEFF/, '');
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === '"' && src[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quote = false;
+      else cell += ch;
+    } else if (ch === '"') {
+      quote = true;
+    } else if (ch === ',') {
+      row.push(cell); cell = '';
+    } else if (ch === '\n') {
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else if (ch !== '\r') {
+      cell += ch;
+    }
+  }
+  row.push(cell);
+  if (row.some((x) => x !== '')) rows.push(row);
+  return rows;
+}
+
+function fromExportCsv(text) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) throw new Error('CSV 中没有可导入的记录');
+  const headers = rows[0].map((x) => x.trim());
+  const idx = (name) => headers.indexOf(name);
+  const required = ['加油日期', '加油时间', '当前里程(公里)', '油价(元/升)', '加油量(升)', '机器显示金额(元)', '实付金额(元)', '是否加满'];
+  const missing = required.filter((name) => idx(name) < 0);
+  if (missing.length) throw new Error(`CSV 缺少列：${missing.join('、')}`);
+  return rows.slice(1).filter((r) => r.some(Boolean)).map((r) => ({
+    refuel_date: normalizeDate(r[idx('加油日期')]),
+    refuel_time: normalizeTime(r[idx('加油时间')]),
+    odometer: parseNumber(r[idx('当前里程(公里)')]),
+    unit_price: parseNumber(r[idx('油价(元/升)')]),
+    volume: parseNumber(r[idx('加油量(升)')]),
+    machine_amount: parseNumber(r[idx('机器显示金额(元)')]),
+    paid_amount: parseNumber(r[idx('实付金额(元)')]),
+    is_full: /^(是|true|1|加满)$/i.test(String(r[idx('是否加满')] ?? '').trim()),
+    fuel_type: r[idx('油品')] || '92#',
+    station: r[idx('加油站')] || null,
+    note: r[idx('备注')] || null,
+  }));
+}
+
+function consumptionKey(v) {
+  const n = parseNumber(v);
+  return n == null ? '' : n.toFixed(2);
+}
+
+function fromTencentRows(rows) {
+  const valid = rows.filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(normalizeDate(r['加油日期'])));
+  if (!valid.length) throw new Error('未找到腾讯出行加油记录');
+  const flags = valid.map((r, i) => {
+    const prev = i > 0 ? consumptionKey(valid[i - 1]['最新油耗 (L/100km)']) : '';
+    const cur = consumptionKey(r['最新油耗 (L/100km)']);
+    return !(cur && prev && cur === prev);
+  });
+  flags[valid.length - 1] = false;
+  return valid.map((r, i) => {
+    const price = parseNumber(r['支付单价 (元)']);
+    const volume = parseNumber(r['加油量 (L)']);
+    const total = parseNumber(r['支付总额 (元)']);
+    const latest = parseNumber(r['最新油耗 (L/100km)']);
+    return {
+      refuel_date: normalizeDate(r['加油日期']),
+      refuel_time: '00:00',
+      odometer: parseNumber(r['行驶里程 (km)']),
+      unit_price: price,
+      volume,
+      machine_amount: total ?? (price && volume ? round2(price * volume) : null),
+      paid_amount: total ?? (price && volume ? round2(price * volume) : null),
+      is_full: flags[i],
+      fuel_type: r['油号'] || '92#',
+      station: null,
+      note: latest == null ? '腾讯出行导入' : `腾讯出行导入；原最新油耗 ${latest}`,
+    };
+  }).sort((a, b) => `${a.refuel_date} ${a.refuel_time}`.localeCompare(`${b.refuel_date} ${b.refuel_time}`));
+}
+
+async function importRecords(records, label) {
+  if (!records.length) throw new Error('没有可导入的记录');
+  if (!confirm(`${label}解析出 ${records.length} 条记录。导入会追加到现有记录；如需替换，请先使用“一键清空”。确认导入？`)) return;
+  setImportStatus('正在导入…');
+  const r = await api('/api/records/import', { method: 'POST', body: JSON.stringify({ records }) });
+  toast(`已导入 ${r.imported} 条记录`);
+  setImportStatus('');
+  page = 1;
+  await load();
+}
+
+$('csvInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    await importRecords(fromExportCsv(await file.text()), 'CSV');
+  } catch (ex) {
+    setImportStatus('');
+    toast(ex.message || 'CSV 导入失败', 'error');
+  }
+});
+
+$('tencentInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    if (!window.XLSX) throw new Error('XLSX 解析库加载失败，请稍后重试');
+    setImportStatus('正在解析腾讯出行文件…');
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
+    await importRecords(fromTencentRows(rows), '腾讯出行 XLSX');
+  } catch (ex) {
+    setImportStatus('');
+    toast(ex.message || '腾讯出行导入失败', 'error');
+  }
+});
+
+$('clearAllBtn').addEventListener('click', async () => {
+  if (!confirm('确认删除全部加油记录？此操作不可恢复。')) return;
+  if (!confirm('再次确认：将清空全部记录和关联附件，确定继续？')) return;
+  try {
+    const r = await api('/api/records', { method: 'DELETE' });
+    toast(`已清空 ${r.deleted} 条记录`);
+    page = 1;
+    await load();
+  } catch (ex) {
+    toast(ex.message || '清空失败', 'error');
+  }
+});
+
+$('prevBtn').addEventListener('click', () => { page--; load(); });
+$('nextBtn').addEventListener('click', () => { page++; load(); });
 load();
 </script>
 </body>
