@@ -287,8 +287,8 @@ async function deleteVehicleData(env: Env, vehicleId: number): Promise<{ records
   if (atts.length) {
     await env.R2.delete(atts.map((a) => a.r2_key));
   }
-  const delRecords = await env.DB.prepare('DELETE FROM fuel_records WHERE vehicle_id = ?').bind(vehicleId).run();
   await env.DB.prepare('DELETE FROM attachments WHERE vehicle_id = ?').bind(vehicleId).run();
+  const delRecords = await env.DB.prepare('DELETE FROM fuel_records WHERE vehicle_id = ?').bind(vehicleId).run();
   return { records: delRecords.meta.changes ?? 0, attachments: atts.length };
 }
 
