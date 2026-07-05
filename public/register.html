@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>注册 · 加油记</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div class="login-wrap">
+  <h1>⛽ 加油记</h1>
+  <div class="card">
+    <div id="closed" style="display:none">
+      <p class="hint" style="text-align:center">注册当前已关闭，请联系管理员。</p>
+      <a class="btn ghost block" href="/login.html" style="margin-top:12px">返回登录</a>
+    </div>
+
+    <form id="regForm" style="display:none">
+      <div class="form-group">
+        <label for="username">用户名</label>
+        <input type="text" id="username" autocomplete="username" placeholder="3-20 位字母、数字或下划线" required autofocus>
+      </div>
+      <div class="form-group">
+        <label for="password">密码</label>
+        <input type="password" id="password" autocomplete="new-password" placeholder="至少 8 位" required>
+      </div>
+      <div class="form-group">
+        <label for="password2">确认密码</label>
+        <input type="password" id="password2" autocomplete="new-password" required>
+      </div>
+      <div class="form-group">
+        <label for="captchaInput">验证码</label>
+        <div class="captcha-row">
+          <button type="button" class="captcha-img" id="captchaImg" title="点击刷新" aria-label="刷新验证码"></button>
+          <input type="text" id="captchaInput" inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="4" placeholder="输入图中字符" required>
+        </div>
+      </div>
+      <div class="error" id="regError"></div>
+      <button class="btn block" type="submit" id="regBtn">注册</button>
+      <p class="hint" style="text-align:center;margin:12px 0 0"><a href="/login.html">已有账号？去登录</a></p>
+    </form>
+  </div>
+</div>
+<script src="/assets/app.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let captchaId = '';
+async function loadCaptcha() {
+  $('captchaInput').value = '';
+  try { const r = await api('/api/captcha'); captchaId = r.id; $('captchaImg').innerHTML = r.svg; }
+  catch { $('captchaImg').textContent = '点击重试'; }
+}
+$('captchaImg').addEventListener('click', loadCaptcha);
+
+(async () => {
+  const st = await api('/api/register').catch(() => ({ open: false }));
+  if (st.open) { $('regForm').style.display = ''; loadCaptcha(); }
+  else { $('closed').style.display = ''; }
+})();
+
+$('regForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('regError'); err.textContent = '';
+  if ($('password').value !== $('password2').value) { err.textContent = '两次密码不一致'; return; }
+  $('regBtn').disabled = true;
+  try {
+    await api('/api/register', { method: 'POST', body: JSON.stringify({
+      username: $('username').value.trim(), password: $('password').value,
+      captcha_id: captchaId, captcha_text: $('captchaInput').value.trim(),
+    }) });
+    toast('注册成功，请登录');
+    setTimeout(() => location.href = '/login.html', 1000);
+  } catch (ex) {
+    err.textContent = ex.message;
+    loadCaptcha();
+    $('regBtn').disabled = false;
+  }
+});
+</script>
+</body>
+</html>

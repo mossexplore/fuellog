@@ -83,7 +83,13 @@ npx wrangler r2 bucket create fuellog-attachments
 npm run db:init:remote
 ```
 
-5. 创建远程用户：
+如果是从旧版本升级已有远程数据库，先执行一次账号与管理后台迁移：
+
+```bash
+npx wrangler d1 execute fuellog --remote --file=migrations/0001_accounts_admin.sql
+```
+
+5. 创建远程管理员：
 
 ```bash
 node scripts/create-user.mjs <username> > user.sql
@@ -112,6 +118,7 @@ src/stats.ts              油耗与费用统计算法
 public/                   前端页面与静态资源
 public/assets/ocr.js      截图 OCR 解析辅助
 schema.sql                D1 表结构
+migrations/               既有 D1 数据库升级脚本
 scripts/create-user.mjs   生成初始化用户 SQL
 wrangler.jsonc            Cloudflare Workers、D1、R2 配置
 ```

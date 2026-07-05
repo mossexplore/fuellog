@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import {
-  verifyPassword, newSessionToken, SESSION_DAYS,
+  hashPassword, verifyPassword, newSessionToken, SESSION_DAYS,
   generateTotpSecret, otpauthUri, verifyTotp,
   generateBackupCodes, hashBackupCode, verifyBackupCode,
 } from './auth';
@@ -17,6 +17,7 @@ type Env = {
 type Vars = {
   userId: number;
   username: string;
+  role: string;
   vehicleId: number;
 };
 
@@ -25,7 +26,7 @@ const CHALLENGE_COOKIE = 'fuellog_2fa';
 const CHALLENGE_MINUTES = 5;
 const ISSUER = '加油记';
 // 未登录即可访问的认证接口（登录两步流程）
-const PUBLIC_PATHS = new Set(['/api/login', '/api/login/verify', '/api/2fa/enroll', '/api/captcha']);
+const PUBLIC_PATHS = new Set(['/api/login', '/api/login/verify', '/api/2fa/enroll', '/api/captcha', '/api/register']);
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
 // ---------- 认证中间件（登录相关接口除外） ----------
@@ -35,12 +36,18 @@ app.use('/api/*', async (c, next) => {
   const token = getCookie(c, COOKIE);
   if (!token) return c.json({ error: 'unauthorized' }, 401);
   const row = await c.env.DB.prepare(
-    `SELECT s.user_id, u.username FROM sessions s JOIN users u ON u.id = s.user_id
+    `SELECT s.user_id, u.username, u.role, u.enabled FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token = ? AND s.expires_at > datetime('now')`
-  ).bind(token).first<{ user_id: number; username: string }>();
+  ).bind(token).first<{ user_id: number; username: string; role: string; enabled: number }>();
   if (!row) return c.json({ error: 'unauthorized' }, 401);
+  if (!row.enabled) { // 已被停用：踢下线
+    await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run();
+    deleteCookie(c, COOKIE, { path: '/' });
+    return c.json({ error: '账号已被停用' }, 403);
+  }
   c.set('userId', row.user_id);
   c.set('username', row.username);
+  c.set('role', row.role);
   // 首期单车：取该用户第一辆车，没有则自动创建
   let v = await c.env.DB.prepare('SELECT id FROM vehicles WHERE user_id = ? ORDER BY id LIMIT 1')
     .bind(row.user_id).first<{ id: number }>();
@@ -52,7 +59,20 @@ app.use('/api/*', async (c, next) => {
   return next();
 });
 
+// 管理员守卫
+app.use('/api/admin/*', async (c, next) => {
+  if (c.get('role') !== 'admin') return c.json({ error: 'forbidden' }, 403);
+  return next();
+});
+
 // ---------- 认证 ----------
+
+// 应用设置读写（settings 表 key-value）
+async function getSetting(c: any, key: string, def = ''): Promise<string> {
+  const db = c.env.DB as D1Database;
+  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first<{ value: string }>();
+  return row ? row.value : def;
+}
 
 // 限速：同一 IP 60 秒内最多 5 次失败
 async function rateLimited(c: any, ip: string): Promise<boolean> {
@@ -90,20 +110,25 @@ app.get('/api/captcha', async (c) => {
 // 校验图形验证码：命中即删（一次性），无论对错都不可复用
 async function checkCaptcha(c: any, id?: string, text?: string): Promise<boolean> {
   if (!id || !text) return false;
-  const row = await c.env.DB.prepare(
+  const db = c.env.DB as D1Database;
+  const row = await db.prepare(
     `SELECT answer FROM captchas WHERE id = ? AND expires_at > datetime('now')`
   ).bind(id).first<{ answer: string }>();
-  await c.env.DB.prepare('DELETE FROM captchas WHERE id = ?').bind(id).run();
+  await db.prepare('DELETE FROM captchas WHERE id = ?').bind(id).run();
   if (!row) return false;
   return row.answer === String(text).trim().toLowerCase();
 }
 
-// 通过全部验证后发放正式会话，并清理临时状态
-async function issueSession(c: any, userId: number): Promise<void> {
+// 通过全部验证后发放正式会话，记录登录信息，并清理临时状态
+async function issueSession(c: any, userId: number, ip: string): Promise<void> {
   const token = newSessionToken();
+  const ua = (c.req.header('user-agent') ?? '').slice(0, 200);
   await c.env.DB.prepare(
     `INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+${SESSION_DAYS} days'))`
   ).bind(token, userId).run();
+  await c.env.DB.prepare(
+    `INSERT INTO login_events (user_id, ip, user_agent) VALUES (?, ?, ?)`
+  ).bind(userId, ip, ua).run();
   await c.env.DB.batch([
     c.env.DB.prepare(`DELETE FROM sessions WHERE expires_at <= datetime('now')`),
     c.env.DB.prepare(`DELETE FROM login_attempts WHERE attempted_at <= datetime('now', '-1 hour')`),
@@ -117,6 +142,8 @@ async function issueSession(c: any, userId: number): Promise<void> {
 interface UserAuthRow {
   id: number;
   password_hash: string;
+  role: string;
+  enabled: number;
   totp_secret: string | null;
   totp_enabled: number;
   totp_last_step: number | null;
@@ -139,11 +166,18 @@ app.post('/api/login', async (c) => {
   if (!username || !password) return fail();
 
   const user = await c.env.DB.prepare(
-    'SELECT id, password_hash, totp_secret, totp_enabled, totp_last_step FROM users WHERE username = ?'
+    'SELECT id, password_hash, role, enabled, totp_secret, totp_enabled, totp_last_step FROM users WHERE username = ?'
   ).bind(username).first<UserAuthRow>();
   if (!user || !(await verifyPassword(password, user.password_hash))) return fail();
+  if (!user.enabled) return c.json({ error: '账号已被停用，请联系管理员' }, 403);
 
-  // 密码通过：发放 5 分钟一次性待验证令牌
+  // 普通用户未开启 2FA：直接登录（2FA 可选）
+  if (!user.totp_enabled && user.role !== 'admin') {
+    await issueSession(c, user.id, ip);
+    return c.json({ ok: true });
+  }
+
+  // 需要第二步：已绑定→验证码；未绑定但为管理员→强制绑定。发放 5 分钟一次性令牌
   const purpose = user.totp_enabled ? 'totp' : 'enroll';
   const secret = purpose === 'enroll' ? generateTotpSecret() : null;
   const chToken = newSessionToken();
@@ -193,7 +227,7 @@ app.post('/api/2fa/enroll', async (c) => {
     hashes.map((h) => c.env.DB.prepare('INSERT INTO backup_codes (user_id, code_hash) VALUES (?, ?)').bind(ch.user_id, h))
   );
   await c.env.DB.prepare('DELETE FROM auth_challenges WHERE token = ?').bind(ch.token).run();
-  await issueSession(c, ch.user_id);
+  await issueSession(c, ch.user_id, ip);
   return c.json({ ok: true, backup_codes: codes });
 });
 
@@ -217,7 +251,7 @@ app.post('/api/login/verify', async (c) => {
     }
     await c.env.DB.prepare('UPDATE users SET totp_last_step = ? WHERE id = ?').bind(step, ch.user_id).run();
     await c.env.DB.prepare('DELETE FROM auth_challenges WHERE token = ?').bind(ch.token).run();
-    await issueSession(c, ch.user_id);
+    await issueSession(c, ch.user_id, ip);
     return c.json({ ok: true });
   }
 
@@ -229,7 +263,7 @@ app.post('/api/login/verify', async (c) => {
     if (await verifyBackupCode(code ?? '', bk.code_hash)) {
       await c.env.DB.prepare('UPDATE backup_codes SET used = 1 WHERE id = ?').bind(bk.id).run();
       await c.env.DB.prepare('DELETE FROM auth_challenges WHERE token = ?').bind(ch.token).run();
-      await issueSession(c, ch.user_id);
+      await issueSession(c, ch.user_id, ip);
       return c.json({ ok: true, backup_used: true, backup_remaining: bks.length - 1 });
     }
   }
@@ -245,7 +279,179 @@ app.post('/api/logout', async (c) => {
   return c.json({ ok: true });
 });
 
-app.get('/api/me', (c) => c.json({ username: c.get('username') }));
+app.get('/api/me', async (c) => {
+  const row = await c.env.DB.prepare('SELECT totp_enabled FROM users WHERE id = ?')
+    .bind(c.get('userId')).first<{ totp_enabled: number }>();
+  return c.json({ username: c.get('username'), role: c.get('role'), totp_enabled: !!row?.totp_enabled });
+});
+
+// ---------- 注册 ----------
+
+app.get('/api/register', async (c) => {
+  return c.json({ open: (await getSetting(c, 'registration_open', '0')) === '1' });
+});
+
+app.post('/api/register', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') ?? 'local';
+  if (await rateLimited(c, ip)) return c.json({ error: '尝试过于频繁，请 1 分钟后再试' }, 429);
+  if ((await getSetting(c, 'registration_open', '0')) !== '1') return c.json({ error: '注册已关闭' }, 403);
+
+  const b = await c.req.json<{ username?: string; password?: string; captcha_id?: string; captcha_text?: string }>().catch(() => ({} as any));
+  if (!(await checkCaptcha(c, b.captcha_id, b.captcha_text))) {
+    await logAttempt(c, ip);
+    return c.json({ error: '验证码错误或已过期', captcha: true }, 400);
+  }
+  const username = (b.username ?? '').trim();
+  const password = b.password ?? '';
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return c.json({ error: '用户名需 3-20 位字母、数字或下划线' }, 422);
+  if (password.length < 8) return c.json({ error: '密码至少 8 位' }, 422);
+
+  const exists = await c.env.DB.prepare('SELECT 1 FROM users WHERE username = ?').bind(username).first();
+  if (exists) return c.json({ error: '用户名已存在' }, 409);
+
+  const hash = await hashPassword(password);
+  await c.env.DB.prepare(`INSERT INTO users (username, password_hash, role, enabled) VALUES (?, ?, 'user', 1)`)
+    .bind(username, hash).run();
+  return c.json({ ok: true });
+});
+
+// ---------- 两步验证自助管理（登录态；普通用户可选，管理员必须） ----------
+
+app.post('/api/2fa/setup', async (c) => {
+  const uid = c.get('userId');
+  const secret = generateTotpSecret();
+  await c.env.DB.prepare(`DELETE FROM auth_challenges WHERE user_id = ? AND purpose = 'setup'`).bind(uid).run();
+  await c.env.DB.prepare(
+    `INSERT INTO auth_challenges (token, user_id, purpose, secret, expires_at)
+     VALUES (?, ?, 'setup', ?, datetime('now', '+10 minutes'))`
+  ).bind(newSessionToken(), uid, secret).run();
+  return c.json({ secret, otpauth_uri: otpauthUri(ISSUER, c.get('username'), secret) });
+});
+
+app.post('/api/2fa/confirm', async (c) => {
+  const uid = c.get('userId');
+  const ch = await c.env.DB.prepare(
+    `SELECT secret FROM auth_challenges WHERE user_id = ? AND purpose = 'setup' AND expires_at > datetime('now')
+     ORDER BY created_at DESC LIMIT 1`
+  ).bind(uid).first<{ secret: string }>();
+  if (!ch?.secret) return c.json({ error: '绑定会话已过期，请重试' }, 400);
+  const { code } = await c.req.json<{ code?: string }>().catch(() => ({} as any));
+  const step = await verifyTotp(ch.secret, code ?? '');
+  if (step < 0) return c.json({ error: '验证码不正确' }, 400);
+
+  const codes = generateBackupCodes(10);
+  const hashes = await Promise.all(codes.map(hashBackupCode));
+  await c.env.DB.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 1, totp_last_step = ? WHERE id = ?')
+    .bind(ch.secret, step, uid).run();
+  await c.env.DB.prepare('DELETE FROM backup_codes WHERE user_id = ?').bind(uid).run();
+  await c.env.DB.batch(hashes.map((h) => c.env.DB.prepare('INSERT INTO backup_codes (user_id, code_hash) VALUES (?, ?)').bind(uid, h)));
+  await c.env.DB.prepare(`DELETE FROM auth_challenges WHERE user_id = ? AND purpose = 'setup'`).bind(uid).run();
+  return c.json({ ok: true, backup_codes: codes });
+});
+
+app.post('/api/2fa/disable', async (c) => {
+  if (c.get('role') === 'admin') return c.json({ error: '管理员必须启用两步验证，不能关闭' }, 403);
+  const uid = c.get('userId');
+  const user = await c.env.DB.prepare('SELECT totp_secret, totp_enabled FROM users WHERE id = ?')
+    .bind(uid).first<{ totp_secret: string | null; totp_enabled: number }>();
+  if (!user?.totp_enabled || !user.totp_secret) return c.json({ ok: true });
+  const { code } = await c.req.json<{ code?: string }>().catch(() => ({} as any));
+  if ((await verifyTotp(user.totp_secret, code ?? '')) < 0) return c.json({ error: '验证码不正确' }, 400);
+  await c.env.DB.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = NULL WHERE id = ?').bind(uid).run();
+  await c.env.DB.prepare('DELETE FROM backup_codes WHERE user_id = ?').bind(uid).run();
+  return c.json({ ok: true });
+});
+
+// ---------- 管理后台（仅 admin） ----------
+
+app.get('/api/admin/settings', async (c) => {
+  return c.json({ registration_open: (await getSetting(c, 'registration_open', '0')) === '1' });
+});
+app.patch('/api/admin/settings', async (c) => {
+  const b = await c.req.json<{ registration_open?: boolean }>().catch(() => ({} as any));
+  if (typeof b.registration_open === 'boolean') {
+    await c.env.DB.prepare(
+      `INSERT INTO settings (key, value) VALUES ('registration_open', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).bind(b.registration_open ? '1' : '0').run();
+  }
+  return c.json({ ok: true });
+});
+
+app.get('/api/admin/users', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT u.id, u.username, u.role, u.enabled, u.totp_enabled, u.created_at,
+       (SELECT COUNT(*) FROM login_events le WHERE le.user_id = u.id) AS login_count,
+       (SELECT MAX(created_at) FROM login_events le WHERE le.user_id = u.id) AS last_login_at,
+       (SELECT ip FROM login_events le WHERE le.user_id = u.id ORDER BY id DESC LIMIT 1) AS last_login_ip,
+       (SELECT COUNT(*) FROM fuel_records r JOIN vehicles v ON v.id = r.vehicle_id WHERE v.user_id = u.id) AS record_count,
+       (SELECT COUNT(*) FROM attachments a JOIN vehicles v ON v.id = a.vehicle_id WHERE v.user_id = u.id) AS attachment_count,
+       (SELECT COALESCE(SUM(a.size),0) FROM attachments a JOIN vehicles v ON v.id = a.vehicle_id WHERE v.user_id = u.id) AS attachment_bytes
+     FROM users u ORDER BY u.id`
+  ).all();
+  return c.json({ users: results });
+});
+
+app.get('/api/admin/users/:id/logins', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT ip, user_agent, created_at FROM login_events WHERE user_id = ? ORDER BY id DESC LIMIT 50`
+  ).bind(c.req.param('id')).all();
+  return c.json({ logins: results });
+});
+
+// 停用 / 启用
+app.patch('/api/admin/users/:id', async (c) => {
+  const id = parseInt(c.req.param('id'), 10);
+  if (id === c.get('userId')) return c.json({ error: '不能操作自己' }, 400);
+  const target = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<{ role: string }>();
+  if (!target) return c.json({ error: 'not found' }, 404);
+  if (target.role === 'admin') return c.json({ error: '不能停用管理员' }, 400);
+  const b = await c.req.json<{ enabled?: boolean }>().catch(() => ({} as any));
+  if (typeof b.enabled !== 'boolean') return c.json({ error: '参数错误' }, 422);
+  await c.env.DB.prepare('UPDATE users SET enabled = ? WHERE id = ?').bind(b.enabled ? 1 : 0, id).run();
+  if (!b.enabled) await c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id).run();
+  return c.json({ ok: true });
+});
+
+// 重置某普通用户的 2FA
+app.post('/api/admin/users/:id/reset-2fa', async (c) => {
+  const id = parseInt(c.req.param('id'), 10);
+  const target = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<{ role: string }>();
+  if (!target) return c.json({ error: 'not found' }, 404);
+  if (target.role === 'admin') return c.json({ error: '不能重置管理员的两步验证' }, 400);
+  await c.env.DB.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = NULL WHERE id = ?').bind(id).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM backup_codes WHERE user_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id),
+  ]);
+  return c.json({ ok: true });
+});
+
+// 删除用户及其全部数据
+app.delete('/api/admin/users/:id', async (c) => {
+  const id = parseInt(c.req.param('id'), 10);
+  if (id === c.get('userId')) return c.json({ error: '不能删除自己' }, 400);
+  const target = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<{ role: string }>();
+  if (!target) return c.json({ error: 'not found' }, 404);
+  if (target.role === 'admin') return c.json({ error: '不能删除管理员' }, 400);
+
+  const { results: atts } = await c.env.DB.prepare(
+    `SELECT a.r2_key FROM attachments a JOIN vehicles v ON v.id = a.vehicle_id WHERE v.user_id = ?`
+  ).bind(id).all<{ r2_key: string }>();
+  if (atts.length) await c.env.R2.delete(atts.map((a) => a.r2_key));
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM attachments WHERE vehicle_id IN (SELECT id FROM vehicles WHERE user_id = ?)`).bind(id),
+    c.env.DB.prepare(`DELETE FROM fuel_records WHERE vehicle_id IN (SELECT id FROM vehicles WHERE user_id = ?)`).bind(id),
+    c.env.DB.prepare('DELETE FROM vehicles WHERE user_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM backup_codes WHERE user_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM auth_challenges WHERE user_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM login_events WHERE user_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id),
+  ]);
+  return c.json({ ok: true });
+});
 
 // 清理超 24h 未关联记录的孤儿附件
 async function cleanupOrphanAttachments(env: Env): Promise<void> {

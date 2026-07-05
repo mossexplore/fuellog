@@ -24,6 +24,20 @@ async function logout() {
   location.href = '/login.html';
 }
 
+// 登录态页面：管理员显示「管理」导航（元素 id=navAdmin，默认隐藏）
+async function revealAdminNav() {
+  try {
+    const me = await api('/api/me');
+    const a = document.getElementById('navAdmin');
+    if (a && me.role === 'admin') a.style.display = '';
+  } catch (_) { /* 未登录等，忽略 */ }
+}
+if (!/\/(login|register)(\.html)?$/.test(location.pathname)) {
+  document.readyState === 'loading'
+    ? document.addEventListener('DOMContentLoaded', revealAdminNav)
+    : revealAdminNav();
+}
+
 // 顶部醒目提示（自动消失）。type: 'success' | 'error'
 function toast(message, type = 'success') {
   let box = document.getElementById('toast');

@@ -3,11 +3,29 @@ CREATE TABLE IF NOT EXISTS users (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     username       TEXT NOT NULL UNIQUE,
     password_hash  TEXT NOT NULL,          -- 格式: pbkdf2$iterations$salt_hex$hash_hex
+    role           TEXT NOT NULL DEFAULT 'user',  -- 'admin' | 'user'
+    enabled        INTEGER NOT NULL DEFAULT 1,     -- 是否允许登录 0/1
     totp_secret    TEXT,                   -- Base32 TOTP 密钥，未绑定为 NULL
-    totp_enabled   INTEGER NOT NULL DEFAULT 0,  -- 是否已启用两步验证 0/1
+    totp_enabled   INTEGER NOT NULL DEFAULT 0,  -- 是否已启用两步验证 0/1（普通用户可选，管理员必须）
     totp_last_step INTEGER,                -- 上次成功验证的时间步，用于防重放
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 应用设置（key-value），如 registration_open=0/1
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- 成功登录事件（供管理后台查看登录信息）
+CREATE TABLE IF NOT EXISTS login_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    ip         TEXT,
+    user_agent TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_login_events_user ON login_events (user_id, id);
 
 -- 车辆表（预留多车，首期默认一辆）
 CREATE TABLE IF NOT EXISTS vehicles (

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>账户 · 加油记</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">⛽ 加油记</a>
+  <nav>
+    <a href="/">仪表盘</a>
+    <a href="/records.html">记录</a>
+    <a href="/account.html" class="active">账户</a>
+    <a href="/admin.html" id="navAdmin" style="display:none">管理</a>
+    <a href="#" onclick="logout();return false;">登出</a>
+  </nav>
+</header>
+
+<div class="container">
+  <div class="card">
+    <h2 class="section" style="margin-top:0">账户信息</h2>
+    <p class="hint">用户名：<b id="uname">—</b>　角色：<span id="urole">—</span></p>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2 class="section" style="margin-top:0">两步验证（2FA）</h2>
+    <p class="hint" id="twofaState">加载中…</p>
+
+    <button class="btn block" id="enableBtn" style="display:none">启用两步验证</button>
+    <button class="btn ghost block" id="disableBtn" style="display:none">关闭两步验证</button>
+
+    <!-- 绑定流程 -->
+    <div id="enrollBox" style="display:none;margin-top:14px">
+      <p class="hint">用 Authenticator 扫描二维码或手动输入密钥，然后回填 6 位验证码。</p>
+      <div class="qr-box"><div id="qr"></div></div>
+      <div class="form-group"><label>密钥</label><div class="totp-secret" id="secretText"></div></div>
+      <div class="form-group">
+        <label for="enrollCode">6 位验证码</label>
+        <input type="text" id="enrollCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位数字">
+      </div>
+      <div class="error" id="enrollError"></div>
+      <button class="btn block" id="confirmBtn">确认启用</button>
+    </div>
+
+    <!-- 恢复码展示 -->
+    <div id="backupBox" style="display:none;margin-top:14px">
+      <p class="hint" style="color:var(--danger)">请立即保存以下 10 个备用恢复码，每个仅可用一次，此后不再显示。</p>
+      <div class="backup-codes" id="backupCodes"></div>
+      <button class="btn ghost block" id="copyCodes" style="margin-top:12px">复制全部</button>
+    </div>
+
+    <!-- 关闭流程 -->
+    <div id="disableBox" style="display:none;margin-top:14px">
+      <div class="form-group">
+        <label for="disableCode">输入当前验证码以关闭</label>
+        <input type="text" id="disableCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位数字">
+      </div>
+      <div class="error" id="disableError"></div>
+      <button class="btn danger block" id="confirmDisableBtn">确认关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/qrcode.min.js"></script>
+<script src="/assets/app.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let isAdmin = false;
+
+async function refresh() {
+  const me = await api('/api/me');
+  isAdmin = me.role === 'admin';
+  $('uname').textContent = me.username;
+  $('urole').textContent = isAdmin ? '超级管理员' : '普通用户';
+  ['enrollBox','backupBox','disableBox'].forEach((x) => $(x).style.display = 'none');
+  if (me.totp_enabled) {
+    $('twofaState').textContent = '状态：已启用 ✅';
+    $('enableBtn').style.display = 'none';
+    $('disableBtn').style.display = isAdmin ? 'none' : '';
+    if (isAdmin) $('twofaState').textContent = '状态：已启用 ✅（管理员必须启用，不可关闭）';
+  } else {
+    $('twofaState').textContent = isAdmin
+      ? '状态：未启用 ⚠️（管理员必须启用，下次登录将强制绑定）'
+      : '状态：未启用（可选，建议开启以提升安全）';
+    $('enableBtn').style.display = '';
+    $('disableBtn').style.display = 'none';
+  }
+}
+
+$('enableBtn').addEventListener('click', async () => {
+  $('enableBtn').disabled = true;
+  try {
+    const r = await api('/api/2fa/setup', { method: 'POST' });
+    $('secretText').textContent = r.secret;
+    const qr = qrcode(0, 'M'); qr.addData(r.otpauth_uri); qr.make();
+    $('qr').innerHTML = qr.createImgTag(5, 8);
+    $('enrollBox').style.display = ''; $('enableBtn').style.display = 'none';
+  } catch (ex) { toast(ex.message, 'error'); }
+  finally { $('enableBtn').disabled = false; }
+});
+
+$('confirmBtn').addEventListener('click', async () => {
+  $('enrollError').textContent = ''; $('confirmBtn').disabled = true;
+  try {
+    const r = await api('/api/2fa/confirm', { method: 'POST', body: JSON.stringify({ code: $('enrollCode').value.trim() }) });
+    $('enrollBox').style.display = 'none';
+    $('backupCodes').innerHTML = r.backup_codes.map((x) => `<span>${x}</span>`).join('');
+    window.__codes = r.backup_codes.join('\n');
+    $('backupBox').style.display = '';
+    $('twofaState').textContent = '状态：已启用 ✅';
+    toast('两步验证已启用');
+  } catch (ex) { $('enrollError').textContent = ex.message; }
+  finally { $('confirmBtn').disabled = false; }
+});
+
+$('disableBtn').addEventListener('click', () => { $('disableBox').style.display = ''; $('disableBtn').style.display = 'none'; });
+$('confirmDisableBtn').addEventListener('click', async () => {
+  $('disableError').textContent = ''; $('confirmDisableBtn').disabled = true;
+  try {
+    await api('/api/2fa/disable', { method: 'POST', body: JSON.stringify({ code: $('disableCode').value.trim() }) });
+    toast('两步验证已关闭');
+    await refresh();
+  } catch (ex) { $('disableError').textContent = ex.message; }
+  finally { $('confirmDisableBtn').disabled = false; }
+});
+
+$('copyCodes').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(window.__codes); toast('已复制'); }
+  catch { toast('复制失败，请手动保存', 'error'); }
+});
+
+refresh();
+</script>
+</body>
+</html>
