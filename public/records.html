@@ -82,35 +82,36 @@ async function load() {
   }
   list.innerHTML = data.items.map(r => `
     <div class="record-item">
-      <div class="record-main">
-        <div>
-          <div class="date">${r.refuel_date} <span>${r.refuel_time}</span></div>
-          <div class="record-place">${r.station ? h(r.station) : '未填写加油站'}</div>
+      <div class="record-card-head">
+        <div class="date">${r.refuel_date}</div>
+        <div class="record-menu">
+          <button class="record-menu-toggle" type="button" aria-label="更多操作" aria-expanded="false" data-menu-toggle>...</button>
+          <div class="record-menu-popover" role="menu">
+            <a role="menuitem" href="/record.html?id=${r.id}">编辑</a>
+            <button role="menuitem" type="button" data-delete-id="${r.id}" data-delete-date="${r.refuel_date}">删除</button>
+          </div>
         </div>
-        <div class="amount">¥${fmt(r.paid_amount)}</div>
-      </div>
-      <div class="record-facts">
-        <div><b>${fmt(r.odometer, 0)}</b><i>当前里程 km</i></div>
-        <div><b>${r.distance_delta != null ? '+' + fmt(r.distance_delta, 0) : '—'}</b><i>本次行驶 km</i></div>
-        <div><b>${fmt(r.volume)}</b><i>加油量 L</i></div>
-        <div><b>${fmt(r.unit_price)}</b><i>油价 元/L</i></div>
-        <div><b>¥${fmt(r.machine_amount)}</b><i>机显金额</i></div>
       </div>
       ${r.segment_consumption != null ? `
-      <div class="record-segment">
-        <div><b>${fmt(r.segment_consumption)}</b><i>升/百公里</i></div>
-        <div><b>${fmt(r.segment_cost_per_km)}</b><i>元/公里</i></div>
-      </div>` : ''}
-      ${r.note ? `<div class="record-note">备注：${h(r.note)}</div>` : ''}
-      <div class="record-footer">
-        <span class="record-state">
-          <span class="badge ${r.is_full ? 'full' : 'partial'}">${r.is_full ? '加满' : '未加满'}</span>
-          <span class="hint">${h(r.fuel_type || '')}</span>
-        </span>
-        <span class="record-actions">
-          <a class="btn ghost sm" href="/record.html?id=${r.id}">编辑</a>
-          <button class="btn danger sm" data-delete-id="${r.id}" data-delete-date="${r.refuel_date}">删除</button>
-        </span>
+      <div class="record-hero-metrics">
+        <div><b>${fmt(r.segment_consumption)}</b><span>L/100km</span></div>
+        <div><b>${r.segment_cost_per_km != null ? fmt(r.segment_cost_per_km) : '—'}</b><span>元/km</span></div>
+      </div>` : `
+      <div class="record-pending-metrics">
+        <b>待加满后计算</b>
+        <span>${r.is_full ? '数据不足，暂未形成分段油耗' : '本次未加满，会并入下一次加满分段'}</span>
+      </div>`}
+      <div class="record-detail-panel">
+        <div class="record-facts">
+          <div><b>${fmt(r.odometer, 0)}km</b><i>车辆总里程</i></div>
+          <div><b>${fmt(r.unit_price)}元/L</b><i>单价</i></div>
+          <div><b>${fmt(r.volume)}L</b><i>加油量</i></div>
+          <div><b>${fmt(r.paid_amount)}元</b><i>加油金额</i></div>
+        </div>
+        <div class="record-footer">
+          <span class="record-distance">${r.distance_delta != null ? '+' + fmt(r.distance_delta, 0) + 'km' : '—'}</span>
+          <span class="badge ${r.is_full ? 'full' : 'partial'}">${r.is_full ? '已加满' : '未加满'}</span>
+        </div>
       </div>
     </div>
   `).join('');
@@ -134,10 +135,33 @@ async function del(id, date) {
   }
 }
 
+function closeRecordMenus() {
+  document.querySelectorAll('.record-menu.open').forEach((m) => {
+    m.classList.remove('open');
+    m.querySelector('[data-menu-toggle]')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
 $('list').addEventListener('click', (e) => {
+  const toggle = e.target.closest('[data-menu-toggle]');
+  if (toggle) {
+    const menu = toggle.closest('.record-menu');
+    const open = !menu.classList.contains('open');
+    closeRecordMenus();
+    menu.classList.toggle('open', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    return;
+  }
+
   const btn = e.target.closest('button[data-delete-id]');
   if (!btn) return;
+  closeRecordMenus();
   del(btn.dataset.deleteId, btn.dataset.deleteDate);
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.record-menu')) return;
+  closeRecordMenus();
 });
 
 function setImportStatus(message) {
