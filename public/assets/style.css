@@ -221,6 +221,55 @@ input.ocr-filled, select.ocr-filled { background: #fff7cc; transition: backgroun
 .badge.partial { background: #fef3c7; color: #b45309; }
 .pager { display: flex; justify-content: center; align-items: center; gap: 16px; margin: 16px 0 60px; }
 
+/* 管理页 */
+.admin-settings .switch-row { padding: 0; }
+.admin-setting-title { font-weight: 700; margin-bottom: 2px; }
+.admin-summary {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px; margin: 14px 0 4px;
+}
+@media (min-width: 560px) { .admin-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.admin-stat {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 11px 12px; box-shadow: 0 1px 2px rgba(20,24,31,.035);
+}
+.admin-stat b { display: block; font-size: 20px; line-height: 1.25; }
+.admin-stat span { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.admin-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.admin-user-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 13px 14px; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(20,24,31,.035);
+}
+.admin-user-main {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 12px; flex-wrap: wrap;
+}
+.admin-user-name { font-weight: 800; font-size: 17px; line-height: 1.35; }
+.admin-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.admin-user-actions {
+  display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto;
+}
+.admin-lock { color: var(--muted); font-size: 13px; line-height: 30px; }
+.admin-user-facts {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px; margin-top: 12px;
+}
+@media (min-width: 720px) { .admin-user-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.admin-user-facts div {
+  min-width: 0; padding: 8px 9px; border-radius: 8px; background: #f7f8fa;
+}
+.admin-user-facts b {
+  display: block; font-size: 13px; line-height: 1.25; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.admin-user-facts i { display: block; margin-top: 2px; font-style: normal; font-size: 11px; color: var(--muted); }
+.admin-login-log {
+  margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: #f7f8fa;
+}
+.admin-login-log div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 12px; }
+.admin-login-log b { font-weight: 600; }
+.admin-login-log span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 杂项 */
 .error { color: var(--danger); font-size: 14px; min-height: 20px; margin: 8px 0; }
 .hint { color: var(--muted); font-size: 13px; }

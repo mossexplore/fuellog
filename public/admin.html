@@ -19,11 +19,11 @@
 </header>
 
 <div class="container">
-  <div class="card">
-    <div class="switch-row" style="padding:0">
+  <div class="card admin-settings">
+    <div class="switch-row">
       <div>
-        <div style="font-weight:600">允许新用户注册</div>
-        <div class="hint">关闭后 /register.html 无法注册</div>
+        <div class="admin-setting-title">允许新用户注册</div>
+        <div class="hint" id="regState">当前状态：—</div>
       </div>
       <label class="switch">
         <input type="checkbox" id="regToggle">
@@ -32,7 +32,12 @@
     </div>
   </div>
 
-  <h2 class="section">用户（<span id="userCount">0</span>）</h2>
+  <div class="admin-summary" id="adminSummary"></div>
+
+  <div class="admin-section-head">
+    <h2 class="section">用户</h2>
+    <span class="hint" id="userCount">0 个账号</span>
+  </div>
   <div id="userList"></div>
 </div>
 
@@ -47,15 +52,30 @@ function esc(s) { return String(s ?? '').replace(/[<>&]/g, (m) => ({'<':'&lt;','
 async function loadSettings() {
   const s = await api('/api/admin/settings');
   $('regToggle').checked = !!s.registration_open;
+  $('regState').textContent = `当前状态：${s.registration_open ? '开放' : '关闭'}`;
 }
 $('regToggle').addEventListener('change', async (e) => {
-  try { await api('/api/admin/settings', { method: 'PATCH', body: JSON.stringify({ registration_open: e.target.checked }) }); toast('已保存'); }
+  try {
+    await api('/api/admin/settings', { method: 'PATCH', body: JSON.stringify({ registration_open: e.target.checked }) });
+    $('regState').textContent = `当前状态：${e.target.checked ? '开放' : '关闭'}`;
+    toast('已保存');
+  }
   catch (ex) { toast(ex.message, 'error'); e.target.checked = !e.target.checked; }
 });
 
 async function loadUsers() {
   const { users } = await api('/api/admin/users');
-  $('userCount').textContent = users.length;
+  const activeCount = users.filter((u) => u.enabled).length;
+  const recordTotal = users.reduce((n, u) => n + (+u.record_count || 0), 0);
+  const attachmentTotal = users.reduce((n, u) => n + (+u.attachment_count || 0), 0);
+  const attachmentBytes = users.reduce((n, u) => n + (+u.attachment_bytes || 0), 0);
+  $('userCount').textContent = `${users.length} 个账号`;
+  $('adminSummary').innerHTML = `
+    <div class="admin-stat"><b>${users.length}</b><span>账号总数</span></div>
+    <div class="admin-stat"><b>${activeCount}</b><span>正常账号</span></div>
+    <div class="admin-stat"><b>${recordTotal}</b><span>加油记录</span></div>
+    <div class="admin-stat"><b>${attachmentTotal}</b><span>附件 · ${fmtBytes(attachmentBytes)}</span></div>
+  `;
   $('userList').innerHTML = users.map((u) => {
     const isAdmin = u.role === 'admin';
     const self = u.id === meId;
@@ -63,18 +83,30 @@ async function loadUsers() {
       `<span class="badge ${isAdmin ? 'full' : ''}">${isAdmin ? '管理员' : '普通'}</span> ` +
       `<span class="badge ${u.enabled ? 'full' : 'partial'}">${u.enabled ? '正常' : '已停用'}</span> ` +
       `<span class="badge ${u.totp_enabled ? 'full' : 'partial'}">2FA ${u.totp_enabled ? '已绑' : '未绑'}</span>`;
-    const last = u.last_login_at ? `${u.last_login_at}（${esc(u.last_login_ip) || '—'}）` : '从未登录';
-    const actions = (isAdmin || self) ? '<span class="hint">（管理员/本人不可操作）</span>' :
+    const last = u.last_login_at ? u.last_login_at : '从未登录';
+    const lastIp = u.last_login_ip ? esc(u.last_login_ip) : '—';
+    const actions = (isAdmin || self) ? '<span class="admin-lock">不可操作</span>' :
       `<button class="btn sm ${u.enabled ? 'danger' : ''}" data-act="toggle" data-id="${u.id}" data-en="${u.enabled ? 0 : 1}">${u.enabled ? '停用' : '启用'}</button>
        <button class="btn sm ghost" data-act="reset" data-id="${u.id}">重置2FA</button>
        <button class="btn sm ghost" data-act="logins" data-id="${u.id}">登录历史</button>
        <button class="btn sm danger" data-act="del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>`;
-    return `<div class="record-item">
-      <div class="line1"><span class="date">${esc(u.username)}</span><span>${badges}</span></div>
-      <div class="line2"><span>最近登录：${last}</span><span>登录 ${u.login_count} 次</span></div>
-      <div class="line2"><span>数据：${u.record_count} 条记录</span><span>${u.attachment_count} 个附件 · ${fmtBytes(u.attachment_bytes)}</span><span>注册于 ${u.created_at}</span></div>
-      <div class="line3"><span></span><span style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${actions}</span></div>
-      <div class="hint" id="logins-${u.id}" style="display:none;margin-top:8px;white-space:pre-line"></div>
+    return `<div class="admin-user-card">
+      <div class="admin-user-main">
+        <div>
+          <div class="admin-user-name">${esc(u.username)}</div>
+          <div class="admin-badges">${badges}</div>
+        </div>
+        <div class="admin-user-actions">${actions}</div>
+      </div>
+      <div class="admin-user-facts">
+        <div><b>${last}</b><i>最近登录</i></div>
+        <div><b>${lastIp}</b><i>最近 IP</i></div>
+        <div><b>${u.login_count}</b><i>登录次数</i></div>
+        <div><b>${u.record_count}</b><i>加油记录</i></div>
+        <div><b>${u.attachment_count} · ${fmtBytes(u.attachment_bytes)}</b><i>附件</i></div>
+        <div><b>${u.created_at}</b><i>注册时间</i></div>
+      </div>
+      <div class="admin-login-log" id="logins-${u.id}" style="display:none"></div>
     </div>`;
   }).join('');
 }
@@ -99,7 +131,9 @@ $('userList').addEventListener('click', async (e) => {
       const box = $('logins-' + id);
       if (box.style.display !== 'none') { box.style.display = 'none'; return; }
       const { logins } = await api('/api/admin/users/' + id + '/logins');
-      box.textContent = logins.length ? logins.map((l) => `${l.created_at}  ${l.ip || '—'}`).join('\n') : '暂无登录记录';
+      box.innerHTML = logins.length
+        ? logins.map((l) => `<div><b>${l.created_at}</b><span>${esc(l.ip || '—')}</span></div>`).join('')
+        : '<div><span>暂无登录记录</span></div>';
       box.style.display = '';
     }
   } catch (ex) { toast(ex.message, 'error'); }
