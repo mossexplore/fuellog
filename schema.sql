@@ -2,6 +2,8 @@
 CREATE TABLE IF NOT EXISTS users (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     username       TEXT NOT NULL UNIQUE,
+    email          TEXT UNIQUE,
+    email_verified_at TEXT,
     password_hash  TEXT NOT NULL,          -- 格式: pbkdf2$iterations$salt_hex$hash_hex
     role           TEXT NOT NULL DEFAULT 'user',  -- 'admin' | 'user'
     enabled        INTEGER NOT NULL DEFAULT 1,     -- 是否允许登录 0/1
@@ -116,3 +118,21 @@ CREATE TABLE IF NOT EXISTS login_attempts (
     attempted_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts (ip, attempted_at);
+
+-- 邮箱验证 / 密码找回验证码。6 位验证码不落库，仅保存带盐 SHA-256 哈希。
+CREATE TABLE IF NOT EXISTS email_tokens (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    purpose    TEXT NOT NULL,             -- 'verify_email' | 'reset_password'
+    token_hash TEXT NOT NULL UNIQUE,
+    email      TEXT NOT NULL,
+    ip         TEXT,
+    user_agent TEXT,
+    expires_at TEXT NOT NULL,
+    used_at    TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_email_tokens_user_purpose
+    ON email_tokens (user_id, purpose, created_at);
+CREATE INDEX IF NOT EXISTS idx_email_tokens_ip
+    ON email_tokens (ip, purpose, created_at);

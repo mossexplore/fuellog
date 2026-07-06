@@ -36,7 +36,7 @@ async function revealAdminNav() {
     if (a) a.style.display = me.role === 'admin' ? '' : 'none';
   } catch (_) { /* 未登录等，忽略 */ }
 }
-if (!/\/(login|register)(\.html)?$/.test(location.pathname)) {
+if (!/\/(login|register|forgot-password|reset-password)(\.html)?$/.test(location.pathname)) {
   document.readyState === 'loading'
     ? document.addEventListener('DOMContentLoaded', () => { revealAdminNav(); setupAppShellNav(); })
     : (revealAdminNav(), setupAppShellNav());

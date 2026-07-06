@@ -4,14 +4,17 @@ import {
   hashPassword, verifyPassword, newSessionToken, SESSION_DAYS,
   generateTotpSecret, otpauthUri, verifyTotp,
   generateBackupCodes, hashBackupCode, verifyBackupCode,
+  sha256Hex,
 } from './auth';
 import { computeStats, type FuelRecord } from './stats';
 import { newCaptcha } from './captcha';
+import { sendMail, type MailEnv } from './mailer';
 
-type Env = {
+type Env = MailEnv & {
   DB: D1Database;
   ASSETS: Fetcher;
   R2: R2Bucket;
+  APP_ORIGIN?: string;
 };
 
 type Vars = {
@@ -26,7 +29,15 @@ const CHALLENGE_COOKIE = 'fuellog_2fa';
 const CHALLENGE_MINUTES = 5;
 const ISSUER = '加油记';
 // 未登录即可访问的认证接口（登录两步流程）
-const PUBLIC_PATHS = new Set(['/api/login', '/api/login/verify', '/api/2fa/enroll', '/api/captcha', '/api/register']);
+const PUBLIC_PATHS = new Set([
+  '/api/login',
+  '/api/login/verify',
+  '/api/2fa/enroll',
+  '/api/captcha',
+  '/api/register',
+  '/api/password/forgot',
+  '/api/password/reset',
+]);
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
 // ---------- 认证中间件（登录相关接口除外） ----------
@@ -117,6 +128,125 @@ async function checkCaptcha(c: any, id?: string, text?: string): Promise<boolean
   await db.prepare('DELETE FROM captchas WHERE id = ?').bind(id).run();
   if (!row) return false;
   return row.answer === String(text).trim().toLowerCase();
+}
+
+function clientIp(c: any): string {
+  return c.req.header('cf-connecting-ip') ?? 'local';
+}
+
+function userAgent(c: any): string {
+  return (c.req.header('user-agent') ?? '').slice(0, 200);
+}
+
+function normalizeEmail(email?: string): string {
+  return String(email ?? '').trim().toLowerCase();
+}
+
+function validEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 120;
+}
+
+function validNewPassword(password: string): string | null {
+  if (password.length < 8) return '密码至少 8 位';
+  if (password.length > 128) return '密码不能超过 128 位';
+  return null;
+}
+
+function generateEmailCode(): string {
+  const bytes = crypto.getRandomValues(new Uint32Array(1));
+  return String(bytes[0] % 1_000_000).padStart(6, '0');
+}
+
+function normalizeEmailCode(code?: string): string {
+  return String(code ?? '').replace(/\D/g, '').slice(0, 6);
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const x = enc.encode(a), y = enc.encode(b);
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+async function hashEmailCode(code: string): Promise<string> {
+  const salt = newSessionToken();
+  const hash = await sha256Hex(`${salt}:${normalizeEmailCode(code)}`);
+  return `${salt}$${hash}`;
+}
+
+async function verifyEmailCode(code: string, stored: string): Promise<boolean> {
+  const parts = stored.split('$');
+  if (parts.length !== 2) return false;
+  const hash = await sha256Hex(`${parts[0]}:${normalizeEmailCode(code)}`);
+  return timingSafeEqual(hash, parts[1]);
+}
+
+async function createEmailCode(c: any, userId: number, purpose: 'verify_email' | 'reset_password', email: string, minutes: number): Promise<string> {
+  const code = generateEmailCode();
+  const codeHash = await hashEmailCode(code);
+  await c.env.DB.prepare(
+    `UPDATE email_tokens SET used_at = datetime('now')
+     WHERE user_id = ? AND purpose = ? AND used_at IS NULL`
+  ).bind(userId, purpose).run();
+  await c.env.DB.prepare(
+    `INSERT INTO email_tokens (user_id, purpose, token_hash, email, ip, user_agent, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+${minutes} minutes'))`
+  ).bind(userId, purpose, codeHash, email, clientIp(c), userAgent(c)).run();
+  c.executionCtx.waitUntil(
+    c.env.DB.prepare(`DELETE FROM email_tokens WHERE expires_at <= datetime('now', '-1 day')`).run()
+  );
+  return code;
+}
+
+async function emailRequestLimited(c: any, purpose: 'verify_email' | 'reset_password', userId?: number): Promise<boolean> {
+  const db = c.env.DB as D1Database;
+  const ip = clientIp(c);
+  const ipRow = await db.prepare(
+    `SELECT COUNT(*) AS cnt FROM email_tokens
+     WHERE ip = ? AND purpose = ? AND created_at > datetime('now', '-1 hour')`
+  ).bind(ip, purpose).first<{ cnt: number }>();
+  if ((ipRow?.cnt ?? 0) >= 5) return true;
+  if (userId == null) return false;
+  const recentUserRow = await db.prepare(
+    `SELECT COUNT(*) AS cnt FROM email_tokens
+     WHERE user_id = ? AND purpose = ? AND created_at > datetime('now', '-60 seconds')`
+  ).bind(userId, purpose).first<{ cnt: number }>();
+  if ((recentUserRow?.cnt ?? 0) > 0) return true;
+  const userRow = await db.prepare(
+    `SELECT COUNT(*) AS cnt FROM email_tokens
+     WHERE user_id = ? AND purpose = ? AND created_at > datetime('now', '-1 hour')`
+  ).bind(userId, purpose).first<{ cnt: number }>();
+  return (userRow?.cnt ?? 0) >= 3;
+}
+
+function resetPasswordMail(code: string): { text: string; html: string } {
+  const text = [
+    '你正在重置加油记账号密码。',
+    '',
+    `本次密码重置验证码：${code}`,
+    '',
+    '验证码 15 分钟内有效，请勿转发给他人。',
+    '',
+    '如果这不是你本人操作，请忽略此邮件。',
+  ].join('\n');
+  const html = `<p>你正在重置加油记账号密码。</p><p>本次密码重置验证码：</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>验证码 15 分钟内有效，请勿转发给他人。</p><p>如果这不是你本人操作，请忽略此邮件。</p>`;
+  return { text, html };
+}
+
+function verifyEmailMail(code: string): { text: string; html: string } {
+  const text = [
+    '请验证你的加油记账号邮箱。',
+    '',
+    `本次邮箱验证码：${code}`,
+    '',
+    '验证码 30 分钟内有效，请勿转发给他人。',
+    '',
+    '如果这不是你本人操作，请忽略此邮件。',
+  ].join('\n');
+  const html = `<p>请验证你的加油记账号邮箱。</p><p>本次邮箱验证码：</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>验证码 30 分钟内有效，请勿转发给他人。</p><p>如果这不是你本人操作，请忽略此邮件。</p>`;
+  return { text, html };
 }
 
 // 通过全部验证后发放正式会话，记录登录信息，并清理临时状态
@@ -280,9 +410,83 @@ app.post('/api/logout', async (c) => {
 });
 
 app.get('/api/me', async (c) => {
-  const row = await c.env.DB.prepare('SELECT totp_enabled FROM users WHERE id = ?')
-    .bind(c.get('userId')).first<{ totp_enabled: number }>();
-  return c.json({ username: c.get('username'), role: c.get('role'), totp_enabled: !!row?.totp_enabled });
+  const row = await c.env.DB.prepare('SELECT totp_enabled, email, email_verified_at FROM users WHERE id = ?')
+    .bind(c.get('userId')).first<{ totp_enabled: number; email: string | null; email_verified_at: string | null }>();
+  return c.json({
+    id: c.get('userId'),
+    username: c.get('username'),
+    role: c.get('role'),
+    totp_enabled: !!row?.totp_enabled,
+    email: row?.email ?? '',
+    email_verified: !!row?.email_verified_at,
+  });
+});
+
+// ---------- 邮箱找回密码 ----------
+
+app.post('/api/password/forgot', async (c) => {
+  const ip = clientIp(c);
+  if (await rateLimited(c, ip)) return c.json({ error: '尝试过于频繁，请 1 分钟后再试' }, 429);
+  if (await emailRequestLimited(c, 'reset_password')) return c.json({ error: '请求过于频繁，请稍后再试' }, 429);
+
+  const b = await c.req.json<{ account?: string; captcha_id?: string; captcha_text?: string }>().catch(() => ({} as any));
+  if (!(await checkCaptcha(c, b.captcha_id, b.captcha_text))) {
+    await logAttempt(c, ip);
+    return c.json({ error: '验证码错误或已过期', captcha: true }, 400);
+  }
+
+  const account = String(b.account ?? '').trim();
+  const email = normalizeEmail(account);
+  const done = () => c.json({ ok: true, message: '如果账号存在且已绑定邮箱，我们会发送 6 位验证码' });
+  if (!account) return done();
+
+  const user = await c.env.DB.prepare(
+    `SELECT id, email, email_verified_at, enabled FROM users
+     WHERE username = ? OR email = ? LIMIT 1`
+  ).bind(account, email).first<{ id: number; email: string | null; email_verified_at: string | null; enabled: number }>();
+  if (!user?.enabled || !user.email || !user.email_verified_at) return done();
+  if (await emailRequestLimited(c, 'reset_password', user.id)) return done();
+
+  const code = await createEmailCode(c, user.id, 'reset_password', user.email, 15);
+  const mail = resetPasswordMail(code);
+  c.executionCtx.waitUntil(
+    sendMail(c.env, { to: user.email, subject: '加油记密码重置', text: mail.text, html: mail.html })
+      .catch((err) => console.error('send reset password email failed', err))
+  );
+  return done();
+});
+
+app.post('/api/password/reset', async (c) => {
+  const ip = clientIp(c);
+  if (await rateLimited(c, ip)) return c.json({ error: '尝试过于频繁，请 1 分钟后再试' }, 429);
+  const b = await c.req.json<{ account?: string; code?: string; password?: string }>().catch(() => ({} as any));
+  const account = String(b.account ?? '').trim();
+  const email = normalizeEmail(account);
+  const code = normalizeEmailCode(b.code);
+  const password = String(b.password ?? '');
+  const passwordError = validNewPassword(password);
+  if (!account || code.length !== 6 || passwordError) return c.json({ error: passwordError || '验证码错误或已过期' }, 422);
+
+  const row = await c.env.DB.prepare(
+    `SELECT et.id, et.user_id, et.token_hash, u.enabled FROM email_tokens et
+     JOIN users u ON u.id = et.user_id
+     WHERE (u.username = ? OR u.email = ?) AND u.email = et.email
+       AND et.purpose = 'reset_password'
+       AND et.used_at IS NULL AND et.expires_at > datetime('now')`
+  ).bind(account, email).first<{ id: number; user_id: number; token_hash: string; enabled: number }>();
+  if (!row || !row.enabled || !(await verifyEmailCode(code, row.token_hash))) {
+    await logAttempt(c, ip);
+    return c.json({ error: '验证码错误或已过期' }, 400);
+  }
+
+  const hash = await hashPassword(password);
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(hash, row.user_id),
+    c.env.DB.prepare('UPDATE email_tokens SET used_at = datetime(\'now\') WHERE id = ?').bind(row.id),
+    c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(row.user_id),
+    c.env.DB.prepare('DELETE FROM auth_challenges WHERE user_id = ?').bind(row.user_id),
+  ]);
+  return c.json({ ok: true });
 });
 
 // ---------- 注册 ----------
@@ -296,22 +500,84 @@ app.post('/api/register', async (c) => {
   if (await rateLimited(c, ip)) return c.json({ error: '尝试过于频繁，请 1 分钟后再试' }, 429);
   if ((await getSetting(c, 'registration_open', '0')) !== '1') return c.json({ error: '注册已关闭' }, 403);
 
-  const b = await c.req.json<{ username?: string; password?: string; captcha_id?: string; captcha_text?: string }>().catch(() => ({} as any));
+  const b = await c.req.json<{ username?: string; email?: string; password?: string; captcha_id?: string; captcha_text?: string }>().catch(() => ({} as any));
   if (!(await checkCaptcha(c, b.captcha_id, b.captcha_text))) {
     await logAttempt(c, ip);
     return c.json({ error: '验证码错误或已过期', captcha: true }, 400);
   }
   const username = (b.username ?? '').trim();
+  const email = normalizeEmail(b.email);
   const password = b.password ?? '';
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return c.json({ error: '用户名需 3-20 位字母、数字或下划线' }, 422);
-  if (password.length < 8) return c.json({ error: '密码至少 8 位' }, 422);
+  if (email && !validEmail(email)) return c.json({ error: '邮箱格式不正确' }, 422);
+  const passwordError = validNewPassword(password);
+  if (passwordError) return c.json({ error: passwordError }, 422);
 
   const exists = await c.env.DB.prepare('SELECT 1 FROM users WHERE username = ?').bind(username).first();
   if (exists) return c.json({ error: '用户名已存在' }, 409);
+  if (email) {
+    const emailExists = await c.env.DB.prepare('SELECT 1 FROM users WHERE email = ?').bind(email).first();
+    if (emailExists) return c.json({ error: '邮箱已被使用' }, 409);
+  }
 
   const hash = await hashPassword(password);
-  await c.env.DB.prepare(`INSERT INTO users (username, password_hash, role, enabled) VALUES (?, ?, 'user', 1)`)
-    .bind(username, hash).run();
+  await c.env.DB.prepare(`INSERT INTO users (username, email, password_hash, role, enabled) VALUES (?, ?, ?, 'user', 1)`)
+    .bind(username, email || null, hash).run();
+  return c.json({ ok: true });
+});
+
+// ---------- 邮箱绑定与验证（登录态） ----------
+
+app.post('/api/email/change', async (c) => {
+  const b = await c.req.json<{ email?: string }>().catch(() => ({} as any));
+  const email = normalizeEmail(b.email);
+  if (!validEmail(email)) return c.json({ error: '邮箱格式不正确' }, 422);
+  const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email = ? AND id <> ?')
+    .bind(email, c.get('userId')).first<{ id: number }>();
+  if (exists) return c.json({ error: '邮箱已被使用' }, 409);
+  await c.env.DB.prepare('UPDATE users SET email = ?, email_verified_at = NULL WHERE id = ?')
+    .bind(email, c.get('userId')).run();
+  return c.json({ ok: true });
+});
+
+app.post('/api/email/verify/send', async (c) => {
+  if (await emailRequestLimited(c, 'verify_email', c.get('userId'))) {
+    return c.json({ error: '请求过于频繁，请稍后再试' }, 429);
+  }
+  const b = await c.req.json<{ email?: string }>().catch(() => ({} as any));
+  const email = normalizeEmail(b.email);
+  if (!validEmail(email)) return c.json({ error: '邮箱格式不正确' }, 422);
+  const current = await c.env.DB.prepare('SELECT email, email_verified_at FROM users WHERE id = ?')
+    .bind(c.get('userId')).first<{ email: string | null; email_verified_at: string | null }>();
+  if (current?.email === email && current.email_verified_at) return c.json({ ok: true, verified: true });
+  const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email = ? AND id <> ?')
+    .bind(email, c.get('userId')).first<{ id: number }>();
+  if (exists) return c.json({ error: '邮箱已被使用' }, 409);
+
+  const code = await createEmailCode(c, c.get('userId'), 'verify_email', email, 30);
+  const mail = verifyEmailMail(code);
+  await sendMail(c.env, { to: email, subject: '验证你的加油记邮箱', text: mail.text, html: mail.html });
+  return c.json({ ok: true });
+});
+
+app.post('/api/email/verify/confirm', async (c) => {
+  const b = await c.req.json<{ code?: string }>().catch(() => ({} as any));
+  const code = normalizeEmailCode(b.code);
+  if (code.length !== 6) return c.json({ error: '验证码错误或已过期' }, 422);
+  const row = await c.env.DB.prepare(
+    `SELECT et.id, et.email, et.token_hash FROM email_tokens et
+     WHERE et.user_id = ? AND et.purpose = 'verify_email'
+       AND et.used_at IS NULL AND et.expires_at > datetime('now')`
+  ).bind(c.get('userId')).first<{ id: number; email: string; token_hash: string }>();
+  if (!row || !(await verifyEmailCode(code, row.token_hash))) return c.json({ error: '验证码错误或已过期' }, 400);
+
+  const exists = await c.env.DB.prepare('SELECT id FROM users WHERE email = ? AND id <> ?')
+    .bind(row.email, c.get('userId')).first<{ id: number }>();
+  if (exists) return c.json({ error: '邮箱已被使用' }, 409);
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET email = ?, email_verified_at = datetime(\'now\') WHERE id = ?').bind(row.email, c.get('userId')),
+    c.env.DB.prepare('UPDATE email_tokens SET used_at = datetime(\'now\') WHERE id = ?').bind(row.id),
+  ]);
   return c.json({ ok: true });
 });
 
@@ -379,6 +645,33 @@ app.patch('/api/admin/settings', async (c) => {
 });
 
 app.get('/api/admin/users', async (c) => {
+  const page = Math.max(1, parseInt(c.req.query('page') || '1', 10) || 1);
+  const size = Math.min(50, Math.max(5, parseInt(c.req.query('size') || '10', 10) || 10));
+  const username = String(c.req.query('username') || '').trim();
+  const where = username ? 'WHERE u.username LIKE ?' : '';
+  const params = username ? [`%${username}%`] : [];
+  const totalRow = await c.env.DB.prepare(`SELECT COUNT(*) AS total FROM users u ${where}`)
+    .bind(...params).first<{ total: number }>();
+  const total = totalRow?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const safePage = Math.min(page, pages);
+  const offset = (safePage - 1) * size;
+
+  const summary = await c.env.DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM users) AS user_count,
+       (SELECT COUNT(*) FROM users WHERE enabled = 1) AS active_count,
+       (SELECT COUNT(*) FROM fuel_records) AS record_count,
+       (SELECT COUNT(*) FROM attachments) AS attachment_count,
+       (SELECT COALESCE(SUM(size), 0) FROM attachments) AS attachment_bytes`
+  ).first<{
+    user_count: number;
+    active_count: number;
+    record_count: number;
+    attachment_count: number;
+    attachment_bytes: number;
+  }>();
+
   const { results } = await c.env.DB.prepare(
     `SELECT u.id, u.username, u.role, u.enabled, u.totp_enabled, u.created_at,
        (SELECT COUNT(*) FROM login_events le WHERE le.user_id = u.id) AS login_count,
@@ -387,9 +680,11 @@ app.get('/api/admin/users', async (c) => {
        (SELECT COUNT(*) FROM fuel_records r JOIN vehicles v ON v.id = r.vehicle_id WHERE v.user_id = u.id) AS record_count,
        (SELECT COUNT(*) FROM attachments a JOIN vehicles v ON v.id = a.vehicle_id WHERE v.user_id = u.id) AS attachment_count,
        (SELECT COALESCE(SUM(a.size),0) FROM attachments a JOIN vehicles v ON v.id = a.vehicle_id WHERE v.user_id = u.id) AS attachment_bytes
-     FROM users u ORDER BY u.id`
-  ).all();
-  return c.json({ users: results });
+     FROM users u ${where}
+     ORDER BY u.id
+     LIMIT ? OFFSET ?`
+  ).bind(...params, size, offset).all();
+  return c.json({ users: results, total, page: safePage, size, pages, summary });
 });
 
 app.get('/api/admin/users/:id/logins', async (c) => {
@@ -399,6 +694,15 @@ app.get('/api/admin/users/:id/logins', async (c) => {
   return c.json({ logins: results });
 });
 
+async function verifyAdminPassword(c: any, password?: string): Promise<string | null> {
+  if (!password) return '请输入管理员密码';
+  const db = c.env.DB as D1Database;
+  const user = await db.prepare('SELECT password_hash FROM users WHERE id = ? AND role = ?')
+    .bind(c.get('userId'), 'admin').first<{ password_hash: string }>();
+  if (!user || !(await verifyPassword(password, user.password_hash))) return '管理员密码不正确';
+  return null;
+}
+
 // 停用 / 启用
 app.patch('/api/admin/users/:id', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
@@ -406,8 +710,12 @@ app.patch('/api/admin/users/:id', async (c) => {
   const target = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<{ role: string }>();
   if (!target) return c.json({ error: 'not found' }, 404);
   if (target.role === 'admin') return c.json({ error: '不能停用管理员' }, 400);
-  const b = await c.req.json<{ enabled?: boolean }>().catch(() => ({} as any));
+  const b = await c.req.json<{ enabled?: boolean; admin_password?: string }>().catch(() => ({} as any));
   if (typeof b.enabled !== 'boolean') return c.json({ error: '参数错误' }, 422);
+  if (!b.enabled) {
+    const passwordError = await verifyAdminPassword(c, b.admin_password);
+    if (passwordError) return c.json({ error: passwordError }, 403);
+  }
   await c.env.DB.prepare('UPDATE users SET enabled = ? WHERE id = ?').bind(b.enabled ? 1 : 0, id).run();
   if (!b.enabled) await c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id).run();
   return c.json({ ok: true });
@@ -416,6 +724,9 @@ app.patch('/api/admin/users/:id', async (c) => {
 // 重置某普通用户的 2FA
 app.post('/api/admin/users/:id/reset-2fa', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
+  const b = await c.req.json<{ admin_password?: string }>().catch(() => ({} as any));
+  const passwordError = await verifyAdminPassword(c, b.admin_password);
+  if (passwordError) return c.json({ error: passwordError }, 403);
   const target = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<{ role: string }>();
   if (!target) return c.json({ error: 'not found' }, 404);
   if (target.role === 'admin') return c.json({ error: '不能重置管理员的两步验证' }, 400);
@@ -431,6 +742,9 @@ app.post('/api/admin/users/:id/reset-2fa', async (c) => {
 app.delete('/api/admin/users/:id', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
   if (id === c.get('userId')) return c.json({ error: '不能删除自己' }, 400);
+  const b = await c.req.json<{ admin_password?: string }>().catch(() => ({} as any));
+  const passwordError = await verifyAdminPassword(c, b.admin_password);
+  if (passwordError) return c.json({ error: passwordError }, 403);
   const target = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<{ role: string }>();
   if (!target) return c.json({ error: 'not found' }, 404);
   if (target.role === 'admin') return c.json({ error: '不能删除管理员' }, 400);

@@ -25,6 +25,29 @@
   </div>
 
   <div class="card" style="margin-top:14px">
+    <h2 class="section" style="margin-top:0">邮箱与密码找回</h2>
+    <div class="account-email-head">
+      <p class="hint" id="emailState">加载中…</p>
+      <button class="btn ghost sm" id="changeEmailBtn" style="display:none">更换邮箱</button>
+    </div>
+    <div class="form-group" id="emailInputGroup">
+      <label for="emailInput">邮箱</label>
+      <input type="text" id="emailInput" autocomplete="email" placeholder="用于接收密码重置邮件">
+    </div>
+    <div class="error" id="emailError"></div>
+    <div class="account-actions">
+      <button class="btn ghost sm" id="sendVerifyBtn">发送邮件</button>
+    </div>
+    <div id="verifyEmailBox" style="display:none;margin-top:14px">
+      <div class="form-group">
+        <label for="emailCode">邮箱验证码</label>
+        <input type="text" id="emailCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="输入邮件中的 6 位数字">
+      </div>
+      <button class="btn ghost sm" id="confirmEmailBtn">确认验证</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
     <h2 class="section" style="margin-top:0">两步验证（2FA）</h2>
     <p class="hint" id="twofaState">加载中…</p>
 
@@ -74,6 +97,15 @@ async function refresh() {
   isAdmin = me.role === 'admin';
   $('uname').textContent = me.username;
   $('urole').textContent = isAdmin ? '超级管理员' : '普通用户';
+  if (!window.__pendingEmail) $('emailInput').value = me.email || '';
+  $('emailState').textContent = me.email
+    ? `当前邮箱：${me.email}（${me.email_verified ? '已验证，可用于找回密码' : '未验证'}）`
+    : '尚未绑定邮箱。绑定并验证后，可通过邮件找回密码。';
+  const editingEmail = window.__editingEmail || !me.email || !me.email_verified || !!window.__pendingEmail;
+  $('emailInputGroup').style.display = editingEmail ? '' : 'none';
+  $('sendVerifyBtn').style.display = editingEmail ? '' : 'none';
+  $('changeEmailBtn').style.display = me.email && me.email_verified && !editingEmail ? '' : 'none';
+  if (!window.__pendingEmail) $('verifyEmailBox').style.display = 'none';
   ['enrollBox','backupBox','disableBox'].forEach((x) => $(x).style.display = 'none');
   if (me.totp_enabled) {
     $('twofaState').textContent = '状态：已启用 ✅';
@@ -88,6 +120,69 @@ async function refresh() {
     $('disableBtn').style.display = 'none';
   }
 }
+
+$('changeEmailBtn').addEventListener('click', () => {
+  window.__editingEmail = true;
+  $('emailError').textContent = '';
+  $('emailInputGroup').style.display = '';
+  $('sendVerifyBtn').style.display = '';
+  $('changeEmailBtn').style.display = 'none';
+  $('verifyEmailBox').style.display = 'none';
+  $('emailInput').value = '';
+  $('emailInput').focus();
+});
+
+let emailCountdownTimer = null;
+function startEmailCountdown(seconds = 60) {
+  clearInterval(emailCountdownTimer);
+  let left = seconds;
+  $('sendVerifyBtn').disabled = true;
+  $('sendVerifyBtn').textContent = `${left}s 后重发`;
+  emailCountdownTimer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearInterval(emailCountdownTimer);
+      $('sendVerifyBtn').disabled = false;
+      $('sendVerifyBtn').textContent = '发送邮件';
+      return;
+    }
+    $('sendVerifyBtn').textContent = `${left}s 后重发`;
+  }, 1000);
+}
+
+$('sendVerifyBtn').addEventListener('click', async () => {
+  $('emailError').textContent = '';
+  const email = $('emailInput').value.trim();
+  $('sendVerifyBtn').disabled = true;
+  try {
+    await api('/api/email/verify/send', { method: 'POST', body: JSON.stringify({ email }) });
+    window.__pendingEmail = email;
+    toast('验证邮件已发送');
+    $('verifyEmailBox').style.display = '';
+    $('emailCode').focus();
+    startEmailCountdown(60);
+  } catch (ex) {
+    $('emailError').textContent = ex.message;
+    $('sendVerifyBtn').disabled = false;
+  }
+});
+
+$('confirmEmailBtn').addEventListener('click', async () => {
+  $('emailError').textContent = '';
+  $('confirmEmailBtn').disabled = true;
+  try {
+    await api('/api/email/verify/confirm', { method: 'POST', body: JSON.stringify({ code: $('emailCode').value.trim() }) });
+    window.__pendingEmail = '';
+    window.__editingEmail = false;
+    clearInterval(emailCountdownTimer);
+    $('sendVerifyBtn').disabled = false;
+    $('sendVerifyBtn').textContent = '发送邮件';
+    $('emailCode').value = '';
+    toast('邮箱已验证');
+    await refresh();
+  } catch (ex) { $('emailError').textContent = ex.message; }
+  finally { $('confirmEmailBtn').disabled = false; }
+});
 
 $('enableBtn').addEventListener('click', async () => {
   $('enableBtn').disabled = true;

@@ -21,6 +21,10 @@
         <input type="text" id="username" autocomplete="username" placeholder="3-20 位字母、数字或下划线" required autofocus>
       </div>
       <div class="form-group">
+        <label for="email">邮箱</label>
+        <input type="text" id="email" autocomplete="email" placeholder="用于找回密码，可稍后验证">
+      </div>
+      <div class="form-group">
         <label for="password">密码</label>
         <input type="password" id="password" autocomplete="new-password" placeholder="至少 8 位" required>
       </div>
@@ -68,7 +72,7 @@ $('regForm').addEventListener('submit', async (e) => {
   $('regBtn').disabled = true;
   try {
     await api('/api/register', { method: 'POST', body: JSON.stringify({
-      username: $('username').value.trim(), password: $('password').value,
+      username: $('username').value.trim(), email: $('email').value.trim(), password: $('password').value,
       captcha_id: captchaId, captcha_text: $('captchaInput').value.trim(),
     }) });
     toast('注册成功，请登录');

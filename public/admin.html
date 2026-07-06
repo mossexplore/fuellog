@@ -19,63 +19,126 @@
 </header>
 
 <div class="container">
-  <div class="card admin-settings">
-    <div class="switch-row">
-      <div>
-        <div class="admin-setting-title">允许新用户注册</div>
-        <div class="hint" id="regState">当前状态：—</div>
-      </div>
-      <label class="switch">
-        <input type="checkbox" id="regToggle">
-        <span class="slider"></span>
-      </label>
-    </div>
-  </div>
-
   <div class="admin-summary" id="adminSummary"></div>
 
   <div class="admin-section-head">
     <h2 class="section">用户</h2>
     <span class="hint" id="userCount">0 个账号</span>
   </div>
+  <form class="admin-user-tools" id="userSearchForm">
+    <input type="text" id="userSearchInput" placeholder="按用户名查询">
+    <button class="btn ghost sm" type="submit">查询</button>
+    <button class="btn ghost sm" type="button" id="userSearchClear">清空</button>
+  </form>
   <div id="userList"></div>
+  <div class="admin-pager" id="userPager" style="display:none">
+    <button class="btn ghost sm" id="userPrevBtn" type="button">上一页</button>
+    <span class="hint" id="userPageInfo"></span>
+    <button class="btn ghost sm" id="userNextBtn" type="button">下一页</button>
+  </div>
+</div>
+
+<div class="admin-password-modal" id="adminPasswordModal" style="display:none">
+  <div class="admin-password-dialog">
+    <h2>验证管理员密码</h2>
+    <p class="hint" id="adminPasswordMessage"></p>
+    <input type="password" id="adminPasswordInput" autocomplete="current-password" placeholder="请输入管理员密码">
+    <div class="admin-password-actions">
+      <button class="btn ghost sm" type="button" id="adminPasswordCancel">取消</button>
+      <button class="btn sm" type="button" id="adminPasswordOk">确认</button>
+    </div>
+  </div>
 </div>
 
 <script src="/assets/app.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let meId = null;
+let registrationOpen = false;
+let userPage = 1;
+const USER_SIZE = 10;
+let usernameQuery = '';
 
 function fmtBytes(n) { n = +n || 0; return n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(0) + ' KB' : (n/1048576).toFixed(1) + ' MB'; }
 function esc(s) { return String(s ?? '').replace(/[<>&]/g, (m) => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[m])); }
+function fmtBeijingTime(value) {
+  if (!value) return '—';
+  const raw = String(value);
+  const date = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(date.getTime())) return raw;
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+function askAdminPassword(action) {
+  return new Promise((resolve) => {
+    const modal = $('adminPasswordModal');
+    const input = $('adminPasswordInput');
+    const message = $('adminPasswordMessage');
+    const ok = $('adminPasswordOk');
+    const cancel = $('adminPasswordCancel');
+    message.textContent = `请输入当前管理员密码，以确认${action}`;
+    input.value = '';
+    modal.style.display = 'flex';
+    setTimeout(() => input.focus(), 0);
+
+    const close = (value) => {
+      modal.style.display = 'none';
+      ok.onclick = null;
+      cancel.onclick = null;
+      document.removeEventListener('keydown', onKeydown);
+      resolve(value);
+    };
+    const submit = () => {
+      if (!input.value) { toast('请输入管理员密码', 'error'); input.focus(); return; }
+      close(input.value);
+    };
+    const onKeydown = (e) => {
+      if (e.key === 'Escape') close(null);
+      if (e.key === 'Enter') submit();
+    };
+
+    ok.onclick = submit;
+    cancel.onclick = () => close(null);
+    document.addEventListener('keydown', onKeydown);
+  });
+}
 
 async function loadSettings() {
   const s = await api('/api/admin/settings');
-  $('regToggle').checked = !!s.registration_open;
-  $('regState').textContent = `当前状态：${s.registration_open ? '开放' : '关闭'}`;
+  registrationOpen = !!s.registration_open;
 }
-$('regToggle').addEventListener('change', async (e) => {
-  try {
-    await api('/api/admin/settings', { method: 'PATCH', body: JSON.stringify({ registration_open: e.target.checked }) });
-    $('regState').textContent = `当前状态：${e.target.checked ? '开放' : '关闭'}`;
-    toast('已保存');
-  }
-  catch (ex) { toast(ex.message, 'error'); e.target.checked = !e.target.checked; }
-});
 
 async function loadUsers() {
-  const { users } = await api('/api/admin/users');
-  const activeCount = users.filter((u) => u.enabled).length;
-  const recordTotal = users.reduce((n, u) => n + (+u.record_count || 0), 0);
-  const attachmentTotal = users.reduce((n, u) => n + (+u.attachment_count || 0), 0);
-  const attachmentBytes = users.reduce((n, u) => n + (+u.attachment_bytes || 0), 0);
-  $('userCount').textContent = `${users.length} 个账号`;
+  const params = new URLSearchParams({ page: String(userPage), size: String(USER_SIZE) });
+  if (usernameQuery) params.set('username', usernameQuery);
+  const data = await api('/api/admin/users?' + params.toString());
+  const { users, total, summary } = data;
+  if (!users.length && total > 0 && userPage > 1) {
+    userPage -= 1;
+    return loadUsers();
+  }
+  userPage = data.page;
+  $('userCount').textContent = usernameQuery ? `${total} 个匹配账号` : `${total} 个账号`;
   $('adminSummary').innerHTML = `
-    <div class="admin-stat"><b>${users.length}</b><span>账号总数</span></div>
-    <div class="admin-stat"><b>${activeCount}</b><span>正常账号</span></div>
-    <div class="admin-stat"><b>${recordTotal}</b><span>加油记录</span></div>
-    <div class="admin-stat"><b>${attachmentTotal}</b><span>附件 · ${fmtBytes(attachmentBytes)}</span></div>
+    <div class="admin-stat"><b>${summary.user_count}</b><span>账号总数</span></div>
+    <div class="admin-stat"><b>${summary.active_count}</b><span>正常账号</span></div>
+    <div class="admin-stat"><b>${summary.record_count}</b><span>加油记录</span></div>
+    <div class="admin-stat"><b>${summary.attachment_count}</b><span>附件 · ${fmtBytes(summary.attachment_bytes)}</span></div>
   `;
+  if (!users.length) {
+    $('userList').innerHTML = `<div class="empty">${usernameQuery ? '没有匹配的用户' : '暂无用户'}</div>`;
+    $('userPager').style.display = 'none';
+    return;
+  }
   $('userList').innerHTML = users.map((u) => {
     const isAdmin = u.role === 'admin';
     const self = u.id === meId;
@@ -83,13 +146,28 @@ async function loadUsers() {
       `<span class="badge ${isAdmin ? 'full' : ''}">${isAdmin ? '管理员' : '普通'}</span> ` +
       `<span class="badge ${u.enabled ? 'full' : 'partial'}">${u.enabled ? '正常' : '已停用'}</span> ` +
       `<span class="badge ${u.totp_enabled ? 'full' : 'partial'}">2FA ${u.totp_enabled ? '已绑' : '未绑'}</span>`;
-    const last = u.last_login_at ? u.last_login_at : '从未登录';
+    const last = u.last_login_at ? fmtBeijingTime(u.last_login_at) : '从未登录';
     const lastIp = u.last_login_ip ? esc(u.last_login_ip) : '—';
     const actions = (isAdmin || self) ? '<span class="admin-lock">不可操作</span>' :
-      `<button class="btn sm ${u.enabled ? 'danger' : ''}" data-act="toggle" data-id="${u.id}" data-en="${u.enabled ? 0 : 1}">${u.enabled ? '停用' : '启用'}</button>
-       <button class="btn sm ghost" data-act="reset" data-id="${u.id}">重置2FA</button>
-       <button class="btn sm ghost" data-act="logins" data-id="${u.id}">登录历史</button>
-       <button class="btn sm danger" data-act="del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>`;
+      `<div class="admin-user-actions-left">
+         <button class="btn sm ghost" data-act="reset" data-id="${u.id}" data-name="${esc(u.username)}">重置2FA</button>
+         <button class="btn sm ghost" data-act="logins" data-id="${u.id}">登录历史</button>
+       </div>
+       <div class="admin-user-actions-right">
+         <button class="btn sm ${u.enabled ? 'danger' : 'ghost'}" data-act="toggle" data-id="${u.id}" data-en="${u.enabled ? 0 : 1}" data-name="${esc(u.username)}">${u.enabled ? '停用' : '启用'}</button>
+         <button class="btn sm danger" data-act="del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>
+       </div>`;
+    const registrationControl = (isAdmin && self) ? `
+      <div class="admin-card-setting">
+        <div>
+          <div class="admin-setting-title">新用户注册</div>
+          <div class="hint" id="regState">当前状态：${registrationOpen ? '开放' : '关闭'}</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="regToggle" ${registrationOpen ? 'checked' : ''}>
+          <span class="slider"></span>
+        </label>
+      </div>` : '';
     return `<div class="admin-user-card">
       <div class="admin-user-main">
         <div>
@@ -98,18 +176,60 @@ async function loadUsers() {
         </div>
         <div class="admin-user-actions">${actions}</div>
       </div>
+      ${registrationControl}
       <div class="admin-user-facts">
         <div><b>${last}</b><i>最近登录</i></div>
         <div><b>${lastIp}</b><i>最近 IP</i></div>
         <div><b>${u.login_count}</b><i>登录次数</i></div>
         <div><b>${u.record_count}</b><i>加油记录</i></div>
         <div><b>${u.attachment_count} · ${fmtBytes(u.attachment_bytes)}</b><i>附件</i></div>
-        <div><b>${u.created_at}</b><i>注册时间</i></div>
+        <div><b>${fmtBeijingTime(u.created_at)}</b><i>注册时间</i></div>
       </div>
       <div class="admin-login-log" id="logins-${u.id}" style="display:none"></div>
     </div>`;
   }).join('');
+
+  $('userPager').style.display = data.pages > 1 ? 'flex' : 'none';
+  $('userPageInfo').textContent = `${data.page} / ${data.pages} 页（共 ${total} 个）`;
+  $('userPrevBtn').disabled = data.page <= 1;
+  $('userNextBtn').disabled = data.page >= data.pages;
 }
+
+$('userSearchForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  usernameQuery = $('userSearchInput').value.trim();
+  userPage = 1;
+  await loadUsers();
+});
+
+$('userSearchClear').addEventListener('click', async () => {
+  $('userSearchInput').value = '';
+  usernameQuery = '';
+  userPage = 1;
+  await loadUsers();
+});
+
+$('userPrevBtn').addEventListener('click', async () => {
+  if (userPage <= 1) return;
+  userPage -= 1;
+  await loadUsers();
+});
+
+$('userNextBtn').addEventListener('click', async () => {
+  userPage += 1;
+  await loadUsers();
+});
+
+$('userList').addEventListener('change', async (e) => {
+  if (e.target.id !== 'regToggle') return;
+  try {
+    await api('/api/admin/settings', { method: 'PATCH', body: JSON.stringify({ registration_open: e.target.checked }) });
+    registrationOpen = e.target.checked;
+    $('regState').textContent = `当前状态：${registrationOpen ? '开放' : '关闭'}`;
+    toast('已保存');
+  }
+  catch (ex) { toast(ex.message, 'error'); e.target.checked = registrationOpen; }
+});
 
 $('userList').addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
@@ -117,22 +237,33 @@ $('userList').addEventListener('click', async (e) => {
   const id = btn.dataset.id, act = btn.dataset.act;
   try {
     if (act === 'toggle') {
-      await api('/api/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ enabled: btn.dataset.en === '1' }) });
+      const nextEnabled = btn.dataset.en === '1';
+      let adminPassword = null;
+      if (!nextEnabled) {
+        if (!confirm(`确定停用用户「${btn.dataset.name}」？停用后该用户将无法登录。`)) return;
+        adminPassword = await askAdminPassword(`停用用户「${btn.dataset.name}」`);
+        if (adminPassword === null) return;
+      }
+      await api('/api/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ enabled: nextEnabled, admin_password: adminPassword }) });
       toast('已更新'); loadUsers();
     } else if (act === 'reset') {
-      if (!confirm('确定重置该用户的两步验证？其已绑定的认证器与恢复码将失效。')) return;
-      await api('/api/admin/users/' + id + '/reset-2fa', { method: 'POST' });
+      if (!confirm(`确定重置用户「${btn.dataset.name}」的两步验证？其已绑定的认证器与恢复码将失效。`)) return;
+      const adminPassword = await askAdminPassword(`重置用户「${btn.dataset.name}」的两步验证`);
+      if (adminPassword === null) return;
+      await api('/api/admin/users/' + id + '/reset-2fa', { method: 'POST', body: JSON.stringify({ admin_password: adminPassword }) });
       toast('已重置'); loadUsers();
     } else if (act === 'del') {
       if (!confirm(`确定彻底删除用户「${btn.dataset.name}」及其全部记录、附件？此操作不可恢复！`)) return;
-      await api('/api/admin/users/' + id, { method: 'DELETE' });
+      const adminPassword = await askAdminPassword(`删除用户「${btn.dataset.name}」`);
+      if (adminPassword === null) return;
+      await api('/api/admin/users/' + id, { method: 'DELETE', body: JSON.stringify({ admin_password: adminPassword }) });
       toast('已删除'); loadUsers();
     } else if (act === 'logins') {
       const box = $('logins-' + id);
       if (box.style.display !== 'none') { box.style.display = 'none'; return; }
       const { logins } = await api('/api/admin/users/' + id + '/logins');
       box.innerHTML = logins.length
-        ? logins.map((l) => `<div><b>${l.created_at}</b><span>${esc(l.ip || '—')}</span></div>`).join('')
+        ? logins.map((l) => `<div><b>${fmtBeijingTime(l.created_at)}</b><span>${esc(l.ip || '—')}</span></div>`).join('')
         : '<div><span>暂无登录记录</span></div>';
       box.style.display = '';
     }
@@ -143,11 +274,8 @@ $('userList').addEventListener('click', async (e) => {
   try {
     const me = await api('/api/me');
     if (me.role !== 'admin') { location.href = '/'; return; }
-    meId = null; // 通过用户列表里 self 判断需要 id；用 username 兜底
+    meId = me.id;
     await loadSettings();
-    const { users } = await api('/api/admin/users');
-    const selfRow = users.find((u) => u.username === me.username);
-    meId = selfRow ? selfRow.id : null;
     await loadUsers();
   } catch (ex) { toast(ex.message, 'error'); }
 })();

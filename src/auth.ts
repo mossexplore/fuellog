@@ -51,6 +51,10 @@ export function newSessionToken(): string {
   return toHex(crypto.getRandomValues(new Uint8Array(32)).buffer);
 }
 
+export async function sha256Hex(input: string): Promise<string> {
+  return toHex(await crypto.subtle.digest('SHA-256', enc.encode(input) as BufferSource));
+}
+
 // 恒定时间字符串比较
 function timingEqual(a: string, b: string): boolean {
   const x = enc.encode(a), y = enc.encode(b);
