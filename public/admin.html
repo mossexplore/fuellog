@@ -148,15 +148,31 @@ async function loadUsers() {
       `<span class="badge ${u.totp_enabled ? 'full' : 'partial'}">2FA ${u.totp_enabled ? '已绑' : '未绑'}</span>`;
     const last = u.last_login_at ? fmtBeijingTime(u.last_login_at) : '从未登录';
     const lastIp = u.last_login_ip ? esc(u.last_login_ip) : '—';
-    const actions = (isAdmin || self) ? '<span class="admin-lock">不可操作</span>' :
-      `<div class="admin-user-actions-left">
-         <button class="btn sm ghost" data-act="reset" data-id="${u.id}" data-name="${esc(u.username)}">重置2FA</button>
-         <button class="btn sm ghost" data-act="logins" data-id="${u.id}">登录历史</button>
-       </div>
-       <div class="admin-user-actions-right">
-         <button class="btn sm ${u.enabled ? 'danger' : 'ghost'}" data-act="toggle" data-id="${u.id}" data-en="${u.enabled ? 0 : 1}" data-name="${esc(u.username)}">${u.enabled ? '停用' : '启用'}</button>
-         <button class="btn sm danger" data-act="del" data-id="${u.id}" data-name="${esc(u.username)}">删除</button>
-       </div>`;
+    const canStatusManage = !isAdmin && !self;
+    const resetAction = self
+      ? `<button role="menuitem" type="button" disabled>重置2FA</button>`
+      : `<button role="menuitem" type="button" data-act="reset" data-id="${u.id}" data-name="${esc(u.username)}">重置2FA</button>`;
+    const toggleAction = `<button role="menuitem" type="button" ${canStatusManage ? `data-act="toggle" data-id="${u.id}" data-en="${u.enabled ? 0 : 1}" data-name="${esc(u.username)}"` : 'disabled'}>${u.enabled ? '停用' : '启用'}</button>`;
+    const deleteAction = `<button role="menuitem" type="button" class="danger" ${canStatusManage ? `data-act="del" data-id="${u.id}" data-name="${esc(u.username)}"` : 'disabled'}>删除</button>`;
+    const actions = `
+      <div class="admin-user-actions-left">
+        ${self ? '' : `<button class="btn sm ghost" data-act="reset" data-id="${u.id}" data-name="${esc(u.username)}">重置2FA</button>`}
+        <button class="btn sm ghost" data-act="logins" data-id="${u.id}">登录历史</button>
+      </div>
+      <div class="admin-user-actions-right">
+        <button class="btn sm ${canStatusManage && u.enabled ? 'danger' : 'ghost'}" ${canStatusManage ? `data-act="toggle" data-id="${u.id}" data-en="${u.enabled ? 0 : 1}" data-name="${esc(u.username)}"` : 'disabled'}>${u.enabled ? '停用' : '启用'}</button>
+        <button class="btn sm danger" ${canStatusManage ? `data-act="del" data-id="${u.id}" data-name="${esc(u.username)}"` : 'disabled'}>删除</button>
+      </div>`;
+    const menu = `
+      <div class="record-menu admin-user-menu">
+        <button class="record-menu-toggle" type="button" aria-label="更多操作" aria-expanded="false" data-admin-menu-toggle>...</button>
+        <div class="record-menu-popover" role="menu">
+          <button role="menuitem" type="button" data-act="logins" data-id="${u.id}">登录历史</button>
+          ${resetAction}
+          ${toggleAction}
+          ${deleteAction}
+        </div>
+      </div>`;
     const registrationControl = (isAdmin && self) ? `
       <div class="admin-card-setting">
         <div>
@@ -174,9 +190,14 @@ async function loadUsers() {
           <div class="admin-user-name">${esc(u.username)}</div>
           <div class="admin-badges">${badges}</div>
         </div>
+        ${menu}
         <div class="admin-user-actions">${actions}</div>
       </div>
       ${registrationControl}
+      <div class="admin-user-mobile-summary">
+        <div><span>最近登录</span><b>${last}</b></div>
+        <div><span>数据</span><b>${u.record_count} 条记录 · ${u.attachment_count} 附件 · ${fmtBytes(u.attachment_bytes)}</b></div>
+      </div>
       <div class="admin-user-facts">
         <div><b>${last}</b><i>最近登录</i></div>
         <div><b>${lastIp}</b><i>最近 IP</i></div>
@@ -232,8 +253,21 @@ $('userList').addEventListener('change', async (e) => {
 });
 
 $('userList').addEventListener('click', async (e) => {
+  const menuToggle = e.target.closest('[data-admin-menu-toggle]');
+  if (menuToggle) {
+    const menu = menuToggle.closest('.record-menu');
+    const open = !menu.classList.contains('open');
+    document.querySelectorAll('.admin-user-menu.open').forEach((m) => {
+      m.classList.remove('open');
+      m.querySelector('[data-admin-menu-toggle]')?.setAttribute('aria-expanded', 'false');
+    });
+    menu.classList.toggle('open', open);
+    menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    return;
+  }
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
+  document.querySelectorAll('.admin-user-menu.open').forEach((m) => m.classList.remove('open'));
   const id = btn.dataset.id, act = btn.dataset.act;
   try {
     if (act === 'toggle') {
@@ -268,6 +302,14 @@ $('userList').addEventListener('click', async (e) => {
       box.style.display = '';
     }
   } catch (ex) { toast(ex.message, 'error'); }
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.admin-user-menu')) return;
+  document.querySelectorAll('.admin-user-menu.open').forEach((m) => {
+    m.classList.remove('open');
+    m.querySelector('[data-admin-menu-toggle]')?.setAttribute('aria-expanded', 'false');
+  });
 });
 
 (async () => {

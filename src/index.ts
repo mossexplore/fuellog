@@ -28,6 +28,9 @@ const COOKIE = 'fuellog_session';
 const CHALLENGE_COOKIE = 'fuellog_2fa';
 const CHALLENGE_MINUTES = 5;
 const ISSUER = '加油记';
+const OCR_MODEL_RAW_BASE = 'https://raw.githubusercontent.com/PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models/main/';
+const OCR_MODEL_CDN_BASE = 'https://cdn.jsdelivr.net/gh/PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models@main/';
+const OCR_MODEL_PATH_RE = /^[A-Za-z0-9_./-]+\.(txt|json|onnx|wasm)$/;
 // 未登录即可访问的认证接口（登录两步流程）
 const PUBLIC_PATHS = new Set([
   '/api/login',
@@ -301,15 +304,15 @@ app.post('/api/login', async (c) => {
   if (!user || !(await verifyPassword(password, user.password_hash))) return fail();
   if (!user.enabled) return c.json({ error: '账号已被停用，请联系管理员' }, 403);
 
-  // 普通用户未开启 2FA：直接登录（2FA 可选）
-  if (!user.totp_enabled && user.role !== 'admin') {
+  // 未开启 2FA：直接登录（2FA 对所有角色均可选）
+  if (!user.totp_enabled) {
     await issueSession(c, user.id, ip);
     return c.json({ ok: true });
   }
 
-  // 需要第二步：已绑定→验证码；未绑定但为管理员→强制绑定。发放 5 分钟一次性令牌
-  const purpose = user.totp_enabled ? 'totp' : 'enroll';
-  const secret = purpose === 'enroll' ? generateTotpSecret() : null;
+  // 已绑定 2FA：发放 5 分钟一次性令牌，进入验证码步骤
+  const purpose = 'totp';
+  const secret = null;
   const chToken = newSessionToken();
   await c.env.DB.prepare(`DELETE FROM auth_challenges WHERE user_id = ? OR expires_at <= datetime('now')`).bind(user.id).run();
   await c.env.DB.prepare(
@@ -320,9 +323,6 @@ app.post('/api/login', async (c) => {
     httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: CHALLENGE_MINUTES * 60,
   });
 
-  if (purpose === 'enroll') {
-    return c.json({ step: 'enroll', secret, otpauth_uri: otpauthUri(ISSUER, username, secret!) });
-  }
   return c.json({ step: 'totp' });
 });
 
@@ -581,7 +581,7 @@ app.post('/api/email/verify/confirm', async (c) => {
   return c.json({ ok: true });
 });
 
-// ---------- 两步验证自助管理（登录态；普通用户可选，管理员必须） ----------
+// ---------- 两步验证自助管理（登录态；所有用户可选） ----------
 
 app.post('/api/2fa/setup', async (c) => {
   const uid = c.get('userId');
@@ -616,7 +616,6 @@ app.post('/api/2fa/confirm', async (c) => {
 });
 
 app.post('/api/2fa/disable', async (c) => {
-  if (c.get('role') === 'admin') return c.json({ error: '管理员必须启用两步验证，不能关闭' }, 403);
   const uid = c.get('userId');
   const user = await c.env.DB.prepare('SELECT totp_secret, totp_enabled FROM users WHERE id = ?')
     .bind(uid).first<{ totp_secret: string | null; totp_enabled: number }>();
@@ -721,15 +720,15 @@ app.patch('/api/admin/users/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-// 重置某普通用户的 2FA
+// 重置用户的 2FA
 app.post('/api/admin/users/:id/reset-2fa', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
+  if (id === c.get('userId')) return c.json({ error: '不能重置自己的两步验证，请到账户页关闭' }, 400);
   const b = await c.req.json<{ admin_password?: string }>().catch(() => ({} as any));
   const passwordError = await verifyAdminPassword(c, b.admin_password);
   if (passwordError) return c.json({ error: passwordError }, 403);
   const target = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(id).first<{ role: string }>();
   if (!target) return c.json({ error: 'not found' }, 404);
-  if (target.role === 'admin') return c.json({ error: '不能重置管理员的两步验证' }, 400);
   await c.env.DB.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = NULL WHERE id = ?').bind(id).run();
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM backup_codes WHERE user_id = ?').bind(id),
@@ -767,12 +766,18 @@ app.delete('/api/admin/users/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-// 清理超 24h 未关联记录的孤儿附件
-async function cleanupOrphanAttachments(env: Env): Promise<void> {
+// 清理过期草稿附件。旧版本没有 expires_at 的未关联附件，按 10 分钟草稿处理。
+async function cleanupOrphanAttachments(env: Env, vehicleId?: number): Promise<void> {
+  const vehicleFilter = vehicleId == null ? '' : 'AND vehicle_id = ?';
   const { results } = await env.DB.prepare(
     `SELECT id, r2_key FROM attachments
-     WHERE record_id IS NULL AND created_at <= datetime('now', '-1 day') LIMIT 100`
-  ).all<{ id: number; r2_key: string }>();
+     WHERE record_id IS NULL ${vehicleFilter}
+       AND (
+         expires_at <= datetime('now')
+         OR (expires_at IS NULL AND created_at <= datetime('now', '-${DRAFT_ATTACHMENT_MINUTES} minutes'))
+       )
+     LIMIT 100`
+  ).bind(...(vehicleId == null ? [] : [vehicleId])).all<{ id: number; r2_key: string }>();
   if (!results.length) return;
   await env.R2.delete(results.map((r) => r.r2_key));
   const ph = results.map(() => '?').join(',');
@@ -794,6 +799,7 @@ interface RecordInput {
   station?: string;
   note?: string;
   attachment_ids?: number[];
+  draft_id?: string;
 }
 
 interface ImportInput {
@@ -803,6 +809,11 @@ interface ImportInput {
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 单文件 10MB
 const MAX_ATTACHMENTS = 9;              // 单条记录最多 9 个附件
+const DRAFT_ATTACHMENT_MINUTES = 10;    // 草稿附件 10 分钟过期
+
+function validDraftId(id?: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(id ?? ''));
+}
 
 function validateRecord(b: Partial<RecordInput>): string | null {
   if (!b.refuel_date || !/^\d{4}-\d{2}-\d{2}$/.test(b.refuel_date)) return '加油日期格式应为 YYYY-MM-DD';
@@ -940,13 +951,16 @@ app.post('/api/records', async (c) => {
   if (!b) return c.json({ error: '请求体格式错误' }, 400);
   const err = validateRecord(b);
   if (err) return c.json({ error: err }, 422);
+  if (Array.isArray(b.attachment_ids) && b.attachment_ids.length && !validDraftId(b.draft_id)) {
+    return c.json({ error: '附件草稿已过期，请重新上传附件' }, 422);
+  }
   const vehicleId = c.get('vehicleId');
   const odoErr = await checkOdometer(c.env.DB, vehicleId, b);
   if (odoErr) return c.json({ error: odoErr }, 422);
 
   const res = await insertRecordStmt(c.env.DB, vehicleId, b).run();
   const recordId = res.meta.last_row_id as number;
-  await linkAttachments(c.env.DB, vehicleId, recordId, b.attachment_ids);
+  await linkAttachments(c.env.DB, vehicleId, recordId, b.attachment_ids, b.draft_id);
   return c.json({ ok: true, id: recordId }, 201);
 });
 
@@ -985,19 +999,27 @@ app.delete('/api/records', async (c) => {
   return c.json({ ok: true, deleted: result.records, attachments: result.attachments });
 });
 
-// 将草稿附件（record_id IS NULL）绑定到指定记录；同时把该记录已有但本次未提交的附件解绑为孤儿（供后续清理）
-async function linkAttachments(db: D1Database, vehicleId: number, recordId: number, ids?: number[]): Promise<void> {
+// 将当前页面草稿附件绑定到指定记录；编辑时也允许保留原本属于该记录的附件。
+async function linkAttachments(db: D1Database, vehicleId: number, recordId: number, ids?: number[], draftId?: string): Promise<void> {
   const wanted = Array.isArray(ids) ? ids.filter((n) => Number.isInteger(n)).slice(0, MAX_ATTACHMENTS) : [];
   if (wanted.length) {
     const ph = wanted.map(() => '?').join(',');
     await db.prepare(
-      `UPDATE attachments SET record_id = ? WHERE vehicle_id = ? AND record_id IS NULL AND id IN (${ph})`
-    ).bind(recordId, vehicleId, ...wanted).run();
+      `UPDATE attachments
+       SET record_id = ?, draft_id = NULL, expires_at = NULL
+       WHERE vehicle_id = ? AND id IN (${ph})
+         AND (
+           (record_id IS NULL AND draft_id = ? AND expires_at > datetime('now'))
+           OR record_id = ?
+         )`
+    ).bind(recordId, vehicleId, ...wanted, draftId, recordId).run();
   }
   // 解绑：属于本记录但不在本次列表中的附件（用户在编辑时删除了）
   const keepPh = wanted.length ? `AND id NOT IN (${wanted.map(() => '?').join(',')})` : '';
   await db.prepare(
-    `UPDATE attachments SET record_id = NULL WHERE record_id = ? AND vehicle_id = ? ${keepPh}`
+    `UPDATE attachments
+     SET record_id = NULL, draft_id = NULL, expires_at = datetime('now', '+${DRAFT_ATTACHMENT_MINUTES} minutes')
+     WHERE record_id = ? AND vehicle_id = ? ${keepPh}`
   ).bind(recordId, vehicleId, ...wanted).run();
 }
 
@@ -1022,6 +1044,9 @@ app.put('/api/records/:id', async (c) => {
   if (!b) return c.json({ error: '请求体格式错误' }, 400);
   const err = validateRecord(b);
   if (err) return c.json({ error: err }, 422);
+  if (Array.isArray(b.attachment_ids) && b.attachment_ids.length && !validDraftId(b.draft_id)) {
+    return c.json({ error: '附件草稿已过期，请重新上传附件' }, 422);
+  }
   const odoErr = await checkOdometer(c.env.DB, vehicleId, b, id);
   if (odoErr) return c.json({ error: odoErr }, 422);
 
@@ -1036,7 +1061,7 @@ app.put('/api/records/:id', async (c) => {
     b.machine_amount, b.paid_amount, b.is_full ? 1 : 0,
     b.fuel_type ?? '92#', b.station ?? null, b.note ?? null, id, vehicleId
   ).run();
-  await linkAttachments(c.env.DB, vehicleId, id, b.attachment_ids);
+  await linkAttachments(c.env.DB, vehicleId, id, b.attachment_ids, b.draft_id);
   return c.json({ ok: true });
 });
 
@@ -1063,25 +1088,33 @@ app.delete('/api/records/:id', async (c) => {
 // 上传单个文件（FormData 字段名 file）。即选即传，返回附件 id，保存记录时再关联。
 app.post('/api/attachments', async (c) => {
   const vehicleId = c.get('vehicleId');
+  await cleanupOrphanAttachments(c.env, vehicleId);
   const form = await c.req.formData().catch(() => null);
   const file = form?.get('file');
+  const draftId = String(form?.get('draft_id') ?? '').trim();
+  if (!validDraftId(draftId)) return c.json({ error: '附件草稿已过期，请刷新页面后重试' }, 422);
   if (!(file instanceof File)) return c.json({ error: '缺少文件' }, 400);
   if (file.size === 0) return c.json({ error: '文件为空' }, 400);
   if (file.size > MAX_FILE_SIZE) return c.json({ error: '单个文件不能超过 10MB' }, 413);
 
-  // 草稿附件数量护栏
+  await c.env.DB.prepare(
+    `UPDATE attachments SET expires_at = datetime('now', '+${DRAFT_ATTACHMENT_MINUTES} minutes')
+     WHERE vehicle_id = ? AND record_id IS NULL AND draft_id = ?`
+  ).bind(vehicleId, draftId).run();
+
+  // 当前页面草稿附件数量护栏
   const { cnt } = (await c.env.DB.prepare(
-    'SELECT COUNT(*) AS cnt FROM attachments WHERE vehicle_id = ? AND record_id IS NULL'
-  ).bind(vehicleId).first<{ cnt: number }>())!;
-  if (cnt >= MAX_ATTACHMENTS * 2) return c.json({ error: '待关联附件过多，请先保存记录' }, 429);
+    'SELECT COUNT(*) AS cnt FROM attachments WHERE vehicle_id = ? AND record_id IS NULL AND draft_id = ?'
+  ).bind(vehicleId, draftId).first<{ cnt: number }>())!;
+  if (cnt >= MAX_ATTACHMENTS) return c.json({ error: `当前记录最多上传 ${MAX_ATTACHMENTS} 个附件` }, 429);
 
   const key = `att/${vehicleId}/${crypto.randomUUID()}`;
   const contentType = file.type || 'application/octet-stream';
   await c.env.R2.put(key, file.stream(), { httpMetadata: { contentType } });
   const res = await c.env.DB.prepare(
-    `INSERT INTO attachments (vehicle_id, record_id, r2_key, filename, content_type, size)
-     VALUES (?, NULL, ?, ?, ?, ?)`
-  ).bind(vehicleId, key, file.name || '未命名', contentType, file.size).run();
+    `INSERT INTO attachments (vehicle_id, record_id, r2_key, filename, content_type, size, draft_id, expires_at)
+     VALUES (?, NULL, ?, ?, ?, ?, ?, datetime('now', '+${DRAFT_ATTACHMENT_MINUTES} minutes'))`
+  ).bind(vehicleId, key, file.name || '未命名', contentType, file.size, draftId).run();
   return c.json({
     id: res.meta.last_row_id, filename: file.name || '未命名', content_type: contentType, size: file.size,
   }, 201);
@@ -1150,6 +1183,51 @@ app.get('/api/export.csv', async (c) => {
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': 'attachment; filename="fuellog.csv"',
   });
+});
+
+// ---------- OCR 模型资源代理 ----------
+
+function ocrModelContentType(path: string): string {
+  if (path.endsWith('.txt')) return 'text/plain; charset=utf-8';
+  if (path.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (path.endsWith('.wasm')) return 'application/wasm';
+  return 'application/octet-stream';
+}
+
+app.get('/ocr-model/*', async (c) => {
+  let path = '';
+  try {
+    path = decodeURIComponent(c.req.path.replace(/^\/ocr-model\//, ''));
+  } catch {
+    return c.text('not found', 404);
+  }
+  if (!path || path.includes('..') || path.startsWith('/') || !OCR_MODEL_PATH_RE.test(path)) {
+    return c.text('not found', 404);
+  }
+
+  const cache = (globalThis.caches as CacheStorage & { default: Cache }).default;
+  const cacheKey = new Request(new URL(`/ocr-model/${path}`, c.req.url).toString(), { method: 'GET' });
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  const upstreams = [OCR_MODEL_RAW_BASE + path, OCR_MODEL_CDN_BASE + path];
+  for (const url of upstreams) {
+    const upstream = await fetch(url, {
+      cf: { cacheTtl: 86400, cacheEverything: true },
+    }).catch(() => null);
+    if (!upstream?.ok || !upstream.body) continue;
+
+    const headers = new Headers(upstream.headers);
+    headers.set('Content-Type', ocrModelContentType(path));
+    headers.set('Cache-Control', 'public, max-age=86400');
+    headers.set('Access-Control-Allow-Origin', '*');
+    headers.delete('Set-Cookie');
+    const response = new Response(upstream.body, { status: 200, headers });
+    c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
+  }
+
+  return c.text('model resource unavailable', 502);
 });
 
 // ---------- 静态资源兜底 ----------

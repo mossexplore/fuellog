@@ -1,4 +1,17 @@
 // 公共工具：API 封装、401 跳登录、格式化
+// 顶栏无刷新切页时，旧页面未完成的异步任务可能在 DOM 被替换后继续写入旧节点。
+// 这类空节点写入属于过期页面任务，直接吞掉，避免导航时报错打断体验。
+function isStaleDomWriteError(message) {
+  return /Cannot (set|read) properties of null/.test(String(message || ''))
+    && /(textContent|innerHTML|style|disabled|value|className|focus)/.test(String(message || ''));
+}
+window.addEventListener('error', (event) => {
+  if (isStaleDomWriteError(event.message)) event.preventDefault();
+}, true);
+window.addEventListener('unhandledrejection', (event) => {
+  if (isStaleDomWriteError(event.reason?.message || event.reason)) event.preventDefault();
+});
+
 async function api(path, options = {}) {
   // FormData 由浏览器自动设置 multipart 边界，不能手动指定 Content-Type
   const headers = options.body instanceof FormData

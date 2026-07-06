@@ -3,16 +3,56 @@
 
 // 必须用 /web 子入口：默认入口依赖 onnxruntime-node（仅 Node），浏览器端要用 onnxruntime-web
 const OCR_CDN = 'https://cdn.jsdelivr.net/npm/ppu-paddle-ocr@6/web/+esm';
+const OCR_MODEL_RAW_BASE = 'https://raw.githubusercontent.com/PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models/main/';
+const OCR_MODEL_PROXY_BASE = '/ocr-model/';
 
 let _service = null;
 let _loading = null;
+let _fetchPatched = false;
 
-// 懒加载并初始化 OCR（首次会下载约 25MB 模型，之后走浏览器缓存）
+function modelProxyUrl(path) {
+  const base = location.protocol === 'file:' ? 'https://car.weyun.top' : location.origin;
+  return `${base}${OCR_MODEL_PROXY_BASE}${path}`;
+}
+
+function rewriteFetchInput(input, url) {
+  if (input instanceof Request) return new Request(url, input);
+  return url;
+}
+
+function patchOcrModelFetch() {
+  if (_fetchPatched || typeof fetch !== 'function') return;
+  const originalFetch = fetch.bind(globalThis);
+  globalThis.fetch = (input, init) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input?.url;
+    if (url && url.startsWith(OCR_MODEL_RAW_BASE)) {
+      const modelPath = url.slice(OCR_MODEL_RAW_BASE.length);
+      return originalFetch(rewriteFetchInput(input, modelProxyUrl(modelPath)), init);
+    }
+    return originalFetch(input, init);
+  };
+  _fetchPatched = true;
+}
+
+function friendlyOcrError(error) {
+  const message = error?.message ? String(error.message) : String(error || '');
+  if (/raw\.githubusercontent|ocr-model|ppocrv6_dict|Failed to fetch|Load failed/i.test(message)) {
+    return new Error('识别模型加载失败，请检查网络后重试');
+  }
+  return error;
+}
+
+// 懒加载并初始化 OCR（模型加载完成后走浏览器缓存）
 function loadOcr(onStatus) {
   if (_service) return Promise.resolve(_service);
   if (_loading) return _loading;
   _loading = (async () => {
-    onStatus && onStatus('正在加载识别模型…（首次需下载约 25MB，请稍候）');
+    patchOcrModelFetch();
+    onStatus && onStatus('识别模型加载中，请稍候…');
     const mod = await import(/* @vite-ignore */ OCR_CDN);
     const PaddleOcrService = mod.PaddleOcrService || mod.default?.PaddleOcrService;
     if (!PaddleOcrService) throw new Error('OCR 模块加载失败');
@@ -40,12 +80,16 @@ async function fileToCanvas(file, maxSide = 1600) {
 
 // 识别一张图片，返回 { text, fields }
 export async function recognizeImage(file, onStatus) {
-  const service = await loadOcr(onStatus);
-  const canvas = await fileToCanvas(file);
-  onStatus && onStatus('正在识别…');
-  const result = await service.recognize(canvas, { strategy: 'per-line' });
-  const text = extractText(result);
-  return { text, fields: parseFuelText(text) };
+  try {
+    const service = await loadOcr(onStatus);
+    const canvas = await fileToCanvas(file);
+    onStatus && onStatus('正在识别…');
+    const result = await service.recognize(canvas, { strategy: 'per-line', noCache: true });
+    const text = extractText(result);
+    return { text, fields: parseFuelText(text) };
+  } catch (error) {
+    throw friendlyOcrError(error);
+  }
 }
 
 // 兼容不同返回结构，抽出纯文本

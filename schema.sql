@@ -69,10 +69,13 @@ CREATE TABLE IF NOT EXISTS attachments (
     filename     TEXT NOT NULL,          -- 原始文件名（仅展示）
     content_type TEXT NOT NULL,
     size         INTEGER NOT NULL,       -- 字节
+    draft_id     TEXT,                   -- 页面草稿 ID，保存记录前用于隔离临时附件
+    expires_at   TEXT,                   -- 草稿附件过期时间；正式附件为 NULL
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_record ON attachments (record_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_vehicle ON attachments (vehicle_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_draft ON attachments (vehicle_id, draft_id);
 
 -- 会话表
 CREATE TABLE IF NOT EXISTS sessions (

@@ -110,12 +110,9 @@ async function refresh() {
   if (me.totp_enabled) {
     $('twofaState').textContent = '状态：已启用 ✅';
     $('enableBtn').style.display = 'none';
-    $('disableBtn').style.display = isAdmin ? 'none' : '';
-    if (isAdmin) $('twofaState').textContent = '状态：已启用 ✅（管理员必须启用，不可关闭）';
+    $('disableBtn').style.display = '';
   } else {
-    $('twofaState').textContent = isAdmin
-      ? '状态：未启用 ⚠️（管理员必须启用，下次登录将强制绑定）'
-      : '状态：未启用（可选，建议开启以提升安全）';
+    $('twofaState').textContent = '状态：未启用（可选，建议开启以提升安全）';
     $('enableBtn').style.display = '';
     $('disableBtn').style.display = 'none';
   }

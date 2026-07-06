@@ -29,44 +29,39 @@
 
       <div class="form-row">
         <div class="form-group">
-          <label for="refuel_date">加油日期</label>
+          <label class="required" for="refuel_date">加油日期</label>
           <input type="date" id="refuel_date" required>
         </div>
         <div class="form-group">
-          <label for="refuel_time">加油时间</label>
+          <label class="required" for="refuel_time">加油时间</label>
           <input type="time" id="refuel_time" required>
         </div>
       </div>
 
-      <div class="form-group">
-        <label for="odometer">当前里程（公里）</label>
-        <input type="number" id="odometer" inputmode="decimal" step="0.1" min="0" required placeholder="仪表盘累计里程">
-      </div>
-
       <div class="form-row">
         <div class="form-group">
-          <label for="unit_price">机器显示油价（元/升）</label>
+          <label class="required" for="unit_price">机器显示油价（元/升）</label>
           <input type="number" id="unit_price" inputmode="decimal" step="0.01" min="0" required>
         </div>
         <div class="form-group">
-          <label for="volume">加油量（升）</label>
+          <label class="required" for="volume">加油量（升）</label>
           <input type="number" id="volume" inputmode="decimal" step="0.01" min="0" required>
         </div>
       </div>
 
       <div class="form-row">
         <div class="form-group">
-          <label for="machine_amount">机器显示金额（元）<span class="hint">自动计算</span></label>
+          <label class="required" for="machine_amount">机器显示金额（元）</label>
           <input type="number" id="machine_amount" inputmode="decimal" step="0.01" min="0" required>
         </div>
         <div class="form-group">
-          <label for="paid_amount">实付金额（元）</label>
+          <label class="required" for="paid_amount">实付金额（元）</label>
           <input type="number" id="paid_amount" inputmode="decimal" step="0.01" min="0" required>
         </div>
       </div>
 
       <div class="switch-row">
-        <label for="is_full" style="margin:0;color:var(--text)">是否加满跳枪</label>
+        <label class="required" for="is_full" style="margin:0;color:var(--text)">是否加满跳枪</label>
         <label class="switch">
           <input type="checkbox" id="is_full" checked>
           <span class="slider"></span>
@@ -75,7 +70,7 @@
 
       <div class="form-row">
         <div class="form-group">
-          <label for="fuel_type">油品标号</label>
+          <label class="required" for="fuel_type">油品标号</label>
           <select id="fuel_type">
             <option>92#</option><option>95#</option><option>98#</option><option>0#柴油</option>
           </select>
@@ -84,6 +79,11 @@
           <label for="station">加油站（可选）</label>
           <input type="text" id="station" maxlength="50">
         </div>
+      </div>
+
+      <div class="form-group">
+        <label class="required" for="odometer">当前里程（公里）</label>
+        <input type="number" id="odometer" inputmode="decimal" step="0.1" min="0" required placeholder="仪表盘累计里程">
       </div>
 
       <div class="form-group">
@@ -111,6 +111,13 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const editId = new URLSearchParams(location.search).get('id');
+function createDraftId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) =>
+    (Number(c) ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> Number(c) / 4).toString(16)
+  );
+}
+const draftId = createDraftId();
 let paidTouched = false;   // 实付金额是否被手动改过
 let machineTouched = false; // 机器金额是否被手动微调过
 
@@ -181,6 +188,7 @@ async function uploadFiles(files) {
     try {
       const fd = new FormData();
       fd.append('file', file);
+      fd.append('draft_id', draftId);
       const meta = await api('/api/attachments', { method: 'POST', body: fd });
       attachments.push(meta);
     } catch (ex) {
@@ -188,6 +196,27 @@ async function uploadFiles(files) {
     }
     renderAttachments();
   }
+}
+
+async function compressImageAttachment(file) {
+  if (file.size <= MAX_SIZE || !file.type.startsWith('image/')) return file;
+  const bmp = await createImageBitmap(file);
+  const maxSide = 2000;
+  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bmp.width * scale));
+  canvas.height = Math.max(1, Math.round(bmp.height * scale));
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close && bmp.close();
+
+  for (const quality of [0.88, 0.76, 0.64]) {
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (blob && blob.size <= MAX_SIZE) {
+      const name = (file.name || '截图').replace(/\.[^.]+$/, '') + '.jpg';
+      return new File([blob], name, { type: 'image/jpeg' });
+    }
+  }
+  throw new Error('截图超过 10MB，压缩后仍无法作为附件保存');
 }
 async function removeAttachment(id) {
   try { await api('/api/attachments/' + id, { method: 'DELETE' }); } catch (ex) { /* 忽略：孤儿会被清理 */ }
@@ -200,11 +229,24 @@ $('fileInput').addEventListener('change', (e) => {
 });
 
 // ---------- 供截图识别模块（module 脚本）调用 ----------
+const OCR_FIELD_KEYS = ['refuel_date', 'refuel_time', 'unit_price', 'volume', 'machine_amount', 'paid_amount', 'fuel_type', 'station'];
+// 清空上一张截图识别填充的字段，避免新图识别失败或识别字段较少时残留旧数据
+window.clearOcrFields = function () {
+  for (const k of OCR_FIELD_KEYS) {
+    const el = $(k);
+    if (!el) continue;
+    el.value = '';
+    el.classList.remove('ocr-filled');
+  }
+  machineTouched = false;
+  paidTouched = false;
+};
 // 把识别出的字段回填到表单，返回填充的字段数
 window.applyOcrFields = function (f) {
-  const keys = ['refuel_date', 'refuel_time', 'unit_price', 'volume', 'machine_amount', 'paid_amount', 'fuel_type', 'station'];
+  f = f || {};
+  window.clearOcrFields();
   let filled = 0;
-  for (const k of keys) {
+  for (const k of OCR_FIELD_KEYS) {
     if (f[k] == null || f[k] === '') continue;
     const el = $(k);
     if (!el) continue;
@@ -213,14 +255,41 @@ window.applyOcrFields = function (f) {
     setTimeout(() => el.classList.remove('ocr-filled'), 3000);
     filled++;
   }
-  // 识别值已直接给出金额，禁用后续自动联动覆盖
-  if (f.machine_amount != null) machineTouched = true;
-  if (f.paid_amount != null) paidTouched = true;
+  // 每次上传都以本次截图为准，避免上一张截图的金额状态影响自动联动
+  machineTouched = f.machine_amount != null && f.machine_amount !== '';
+  paidTouched = f.paid_amount != null && f.paid_amount !== '';
+  if (!machineTouched) recalcMachine();
   return filled;
 };
 // 把识别用的原图加入附件列表
 window.addRecognizedAttachment = function (meta) {
   if (attachments.length < MAX_ATTACH) { attachments.push(meta); renderAttachments(); }
+};
+window.uploadRecognizedAttachment = async function (file) {
+  const err = $('error');
+  if (attachments.length >= MAX_ATTACH) {
+    err.textContent = `截图未保存为附件：最多上传 ${MAX_ATTACH} 个附件`;
+    return false;
+  }
+  const cell = document.createElement('div');
+  cell.className = 'attach-cell uploading';
+  cell.textContent = '截图上传中…';
+  $('attachGrid').appendChild(cell);
+  try {
+    const attachmentFile = await compressImageAttachment(file);
+    const fd = new FormData();
+    fd.append('file', attachmentFile);
+    fd.append('draft_id', draftId);
+    const meta = await api('/api/attachments', { method: 'POST', body: fd });
+    window.addRecognizedAttachment(meta);
+    return true;
+  } catch (ex) {
+    err.textContent = '截图未保存为附件：' + (ex && ex.message ? ex.message : ex);
+    return false;
+  } finally {
+    cell.remove();
+    renderAttachments();
+  }
 };
 
 function recalcMachine() {
@@ -288,6 +357,7 @@ document.getElementById('recordForm').addEventListener('submit', async (e) => {
     station: $('station').value.trim() || null,
     note: $('note').value.trim() || null,
     attachment_ids: attachments.map((a) => a.id),
+    draft_id: draftId,
   };
   // 机器金额与 单价×油量 偏差 > 0.1 元时提示确认
   const expected = Math.round(body.unit_price * body.volume * 100) / 100;
@@ -310,32 +380,34 @@ document.getElementById('recordForm').addEventListener('submit', async (e) => {
 </script>
 
 <script type="module">
-import { recognizeImage } from '/assets/ocr.js';
+import { recognizeImage } from '/assets/ocr.js?v=20260706-ocr-message';
 const ocrBtn = document.getElementById('ocrBtn');
 const ocrInput = document.getElementById('ocrInput');
 const ocrStatus = document.getElementById('ocrStatus');
 const setS = (m, cls) => { ocrStatus.textContent = m; ocrStatus.className = 'ocr-status' + (cls ? ' ' + cls : ''); };
+let ocrRunId = 0;
 
 ocrBtn.addEventListener('click', () => ocrInput.click());
 ocrInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
+  const runId = ++ocrRunId;
+  window.clearOcrFields();
   ocrBtn.disabled = true;
+  setS('已选择新截图，正在准备识别…');
+  const attachmentUpload = window.uploadRecognizedAttachment(file).catch(() => null);
   try {
-    const { fields } = await recognizeImage(file, (m) => setS(m));
+    const { fields } = await recognizeImage(file, (m) => { if (runId === ocrRunId) setS(m); });
+    if (runId !== ocrRunId) return;
     const n = window.applyOcrFields(fields);
     setS(n ? `已识别并填充 ${n} 项，请核对（当前里程需手动填写）` : '未识别到加油信息，请手动填写', n ? 'ok' : 'warn');
-    // 识别成功与否都把原图存为附件（复用附件上传）
-    try {
-      const fd = new FormData(); fd.append('file', file);
-      const meta = await window.api('/api/attachments', { method: 'POST', body: fd });
-      window.addRecognizedAttachment(meta);
-    } catch (_) { /* 附件失败不影响识别结果 */ }
   } catch (ex) {
+    if (runId !== ocrRunId) return;
     setS('识别失败：' + (ex && ex.message ? ex.message : ex) + '，可手动填写', 'warn');
   } finally {
-    ocrBtn.disabled = false;
+    await attachmentUpload;
+    if (runId === ocrRunId) ocrBtn.disabled = false;
   }
 });
 </script>
