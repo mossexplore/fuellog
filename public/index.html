@@ -40,27 +40,27 @@
 
   <div class="charts">
     <div class="chart-card wide">
-      <h2>① 分段油耗趋势（升/百公里）</h2>
+	      <h2>分段油耗趋势（升/百公里）</h2>
       <div class="chart-box"><canvas id="consumptionChart"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>② 每公里油费（元/公里）</h2>
+	      <h2>每公里油费（元/公里）</h2>
       <div class="chart-box"><canvas id="costPerKmChart"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>③ 油价趋势（元/升）</h2>
+	      <h2>油价趋势（元/升）</h2>
       <div class="chart-box"><canvas id="priceChart"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>④ 月度油费（元）</h2>
+	      <h2>月度油费（元）</h2>
       <div class="chart-box"><canvas id="monthlyChart"></canvas></div>
     </div>
     <div class="chart-card">
-      <h2>⑤ 月度里程（公里）</h2>
+	      <h2>月度里程（公里）</h2>
       <div class="chart-box"><canvas id="monthlyDistChart"></canvas></div>
     </div>
     <div class="chart-card wide">
-      <h2>⑥ 年度对比</h2>
+	      <h2>年度对比</h2>
       <div class="chart-box"><canvas id="yearlyChart"></canvas></div>
     </div>
   </div>
@@ -92,6 +92,7 @@
   document.getElementById('m-year-dist-label').textContent = `今年里程（公里，${thisYear}）`;
   document.getElementById('m-year-paid-label').textContent = `今年油费（元，${thisYear}）`;
 
+  const monthLabel = (date) => String(date || '').slice(0, 7);
   const guide = document.getElementById('guide');
   if (s.refuel_count === 0) {
     guide.textContent = '还没有记录，点击右下角「+」记录第一次加油。';
@@ -101,39 +102,105 @@
     guide.style.display = 'block';
   }
 
-  const gridColor = 'rgba(0,0,0,.06)';
+  const gridColor = 'rgba(28,30,33,.055)';
+  const tickColor = '#858a93';
+  const font = { family: '-apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif' };
+  Chart.defaults.font.family = font.family;
+  Chart.defaults.color = tickColor;
+
+  function softFill(ctx, color) {
+    const { chartArea } = ctx.chart;
+    if (!chartArea) return color.replace('1)', '.10)');
+    const g = ctx.chart.ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+    g.addColorStop(0, color.replace('1)', '.22)'));
+    g.addColorStop(1, color.replace('1)', '.02)'));
+    return g;
+  }
+
+  const tooltip = {
+    backgroundColor: 'rgba(28,30,33,.92)',
+    titleColor: '#fff',
+    bodyColor: 'rgba(255,255,255,.9)',
+    displayColors: false,
+    padding: 10,
+    cornerRadius: 8,
+    titleFont: { size: 12, weight: '600' },
+    bodyFont: { size: 12 },
+  };
   const baseOpts = (yTicks = 5) => ({
     responsive: true,
     maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { display: false }, tooltip },
     scales: {
-      y: { grid: { color: gridColor }, ticks: { maxTicksLimit: yTicks } },
-      x: { grid: { display: false }, ticks: { maxRotation: 0, minRotation: 0, maxTicksLimit: 6, autoSkip: true } },
+      y: {
+        border: { display: false },
+        grid: { color: gridColor, drawTicks: false },
+        ticks: { maxTicksLimit: yTicks, padding: 8, color: tickColor, font: { size: 11 } },
+      },
+      x: {
+        border: { display: false },
+        grid: { display: false },
+        ticks: { maxRotation: 0, minRotation: 0, maxTicksLimit: 6, autoSkip: true, color: tickColor, font: { size: 11 } },
+      },
     },
   });
-  const line = (id, labels, data, color, bg, opts = {}) => new Chart(document.getElementById(id), {
+  const monthXAxisOpts = () => {
+    const opts = baseOpts();
+    return {
+      scales: {
+        ...opts.scales,
+        x: {
+          ...opts.scales.x,
+          ticks: {
+            ...opts.scales.x.ticks,
+            callback: function(value) { return monthLabel(this.getLabelForValue(value)); },
+          },
+        },
+      },
+    };
+  };
+  const line = (id, labels, data, color, fillColor, opts = {}) => new Chart(document.getElementById(id), {
     type: 'line',
-    data: { labels, datasets: [{ data, borderColor: color, backgroundColor: bg, fill: !!bg, tension: .3, pointRadius: labels.length > 40 ? 0 : 3, borderWidth: 2 }] },
+    data: { labels, datasets: [{
+      data,
+      borderColor: color,
+      backgroundColor: (ctx) => fillColor ? softFill(ctx, fillColor) : 'transparent',
+      fill: !!fillColor,
+      tension: .36,
+      pointRadius: labels.length > 40 ? 0 : 2.4,
+      pointHoverRadius: 5,
+      pointBorderWidth: 2,
+      pointBackgroundColor: '#fff',
+      pointBorderColor: color,
+      borderWidth: 2.5,
+    }] },
     options: { ...baseOpts(), ...opts },
   });
   const bar = (id, labels, data, color) => new Chart(document.getElementById(id), {
     type: 'bar',
-    data: { labels, datasets: [{ data, backgroundColor: color }] },
+    data: { labels, datasets: [{
+      data,
+      backgroundColor: color,
+      borderRadius: 7,
+      borderSkipped: false,
+      maxBarThickness: 34,
+    }] },
     options: baseOpts(),
   });
 
-  // ① 分段油耗（通栏主图）
-  line('consumptionChart', s.segments.map(x => x.date), s.segments.map(x => x.consumption), '#2563eb', 'rgba(37,99,235,.12)');
-  // ② 每公里油费
-  line('costPerKmChart', s.segments.map(x => x.date), s.segments.map(x => x.cost_per_km), '#7c3aed', 'rgba(124,58,237,.10)');
-  // ③ 油价趋势
-  line('priceChart', s.price_trend.map(x => x.date), s.price_trend.map(x => x.price), '#059669', 'rgba(5,150,105,.10)');
-  // ④ 月度油费
-  bar('monthlyChart', s.monthly_cost.map(x => x.month), s.monthly_cost.map(x => x.paid_yuan), '#60a5fa');
-  // ⑤ 月度里程
-  bar('monthlyDistChart', s.monthly_distance.map(x => x.month), s.monthly_distance.map(x => x.distance_km), '#34d399');
+	  // 分段油耗（通栏主图）
+  line('consumptionChart', s.segments.map(x => x.date), s.segments.map(x => x.consumption), '#2563eb', 'rgba(37,99,235,1)', monthXAxisOpts());
+	  // 每公里油费
+  line('costPerKmChart', s.segments.map(x => x.date), s.segments.map(x => x.cost_per_km), '#7c3aed', 'rgba(124,58,237,1)', monthXAxisOpts());
+	  // 油价趋势
+  line('priceChart', s.price_trend.map(x => x.date), s.price_trend.map(x => x.price), '#059669', 'rgba(5,150,105,1)', monthXAxisOpts());
+	  // 月度油费
+  bar('monthlyChart', s.monthly_cost.map(x => x.month), s.monthly_cost.map(x => x.paid_yuan), '#93c5fd');
+	  // 月度里程
+  bar('monthlyDistChart', s.monthly_distance.map(x => x.month), s.monthly_distance.map(x => x.distance_km), '#6ee7b7');
 
-  // ⑥ 年度对比：油费/里程用左轴（柱），油耗用右轴（线）
+	  // 年度对比：油费/里程用左轴（柱），油耗用右轴（线）
   const years = [...new Set(s.monthly_cost.map(x => x.month.slice(0, 4)))].sort();
   const sumBy = (arr, key) => years.map(y => Math.round(arr.filter(x => x.month.startsWith(y)).reduce((t, x) => t + x[key], 0)));
   const yearCost = sumBy(s.monthly_cost, 'paid_yuan');
@@ -147,19 +214,27 @@
     data: {
       labels: years,
       datasets: [
-        { type: 'bar', label: '油费（元）', data: yearCost, backgroundColor: '#60a5fa', yAxisID: 'y' },
-        { type: 'bar', label: '里程（公里）', data: yearDist, backgroundColor: '#34d399', yAxisID: 'y' },
-        { type: 'line', label: '油耗（升/百公里）', data: yearCons, borderColor: '#f59e0b', backgroundColor: '#f59e0b', yAxisID: 'y1', tension: .3 },
+        { type: 'bar', label: '油费（元）', data: yearCost, backgroundColor: '#93c5fd', borderRadius: 7, borderSkipped: false, maxBarThickness: 34, yAxisID: 'y' },
+        { type: 'bar', label: '里程（公里）', data: yearDist, backgroundColor: '#6ee7b7', borderRadius: 7, borderSkipped: false, maxBarThickness: 34, yAxisID: 'y' },
+        { type: 'line', label: '油耗（升/百公里）', data: yearCons, borderColor: '#f59e0b', backgroundColor: '#fff', pointBackgroundColor: '#fff', pointBorderColor: '#f59e0b', pointBorderWidth: 2, pointRadius: 3, pointHoverRadius: 5, borderWidth: 2.5, yAxisID: 'y1', tension: .36 },
       ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 12 } } } },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        tooltip,
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: { boxWidth: 10, boxHeight: 10, useBorderRadius: true, borderRadius: 3, padding: 14, font: { size: 12 } },
+        },
+      },
       scales: {
-        y: { grid: { color: gridColor }, ticks: { maxTicksLimit: 5 } },
-        y1: { position: 'right', grid: { display: false }, suggestedMin: 0, ticks: { maxTicksLimit: 5 } },
-        x: { grid: { display: false }, ticks: { maxRotation: 0, minRotation: 0, autoSkip: true } },
+        y: { border: { display: false }, grid: { color: gridColor, drawTicks: false }, ticks: { maxTicksLimit: 5, padding: 8, color: tickColor, font: { size: 11 } } },
+        y1: { position: 'right', border: { display: false }, grid: { display: false }, suggestedMin: 0, ticks: { maxTicksLimit: 5, padding: 8, color: tickColor, font: { size: 11 } } },
+        x: { border: { display: false }, grid: { display: false }, ticks: { maxRotation: 0, minRotation: 0, autoSkip: true, color: tickColor, font: { size: 11 } } },
       },
     },
   });

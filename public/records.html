@@ -12,7 +12,6 @@
   <nav>
     <a href="/">仪表盘</a>
     <a href="/records.html" class="active">记录</a>
-    <a href="/api/export.csv">导出CSV</a>
     <a href="/account.html">账户</a>
     <a href="/admin.html" id="navAdmin" style="display:none">管理</a>
     <a href="#" onclick="logout();return false;">登出</a>
@@ -20,13 +19,29 @@
 </header>
 
 <div class="container">
-  <div class="records-tools">
-    <label class="btn ghost sm" for="csvInput">导入CSV</label>
-    <input type="file" id="csvInput" accept=".csv,text/csv" hidden>
-    <label class="btn ghost sm" for="tencentInput">导入腾讯出行XLSX</label>
-    <input type="file" id="tencentInput" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
-    <button class="btn danger sm" id="clearAllBtn" type="button">一键清空</button>
-    <span class="hint" id="importStatus"></span>
+  <div class="records-head">
+    <span class="hint" id="recordCount">共 — 条记录</span>
+    <button class="btn ghost sm" id="toolsToggle" type="button">数据管理</button>
+  </div>
+
+  <div class="tools-panel" id="toolsPanel" style="display:none">
+    <div class="tools-row">
+      <span class="tools-label">导出</span>
+      <a class="btn ghost sm" href="/api/export.csv">导出 CSV</a>
+    </div>
+    <div class="tools-row">
+      <span class="tools-label">导入</span>
+      <label class="btn ghost sm" for="csvInput">导入 CSV</label>
+      <input type="file" id="csvInput" accept=".csv,text/csv" hidden>
+      <label class="btn ghost sm" for="tencentInput">导入腾讯出行 XLSX</label>
+      <input type="file" id="tencentInput" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
+      <span class="hint" id="importStatus"></span>
+    </div>
+    <div class="tools-divider"></div>
+    <div class="tools-row">
+      <span class="tools-label danger">危险操作</span>
+      <button class="btn danger sm" id="clearAllBtn" type="button">一键清空</button>
+    </div>
   </div>
   <div id="list"></div>
   <div class="pager" id="pager" style="display:none">
@@ -48,9 +63,18 @@ const h = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[ch]));
 
+// 数据管理面板：默认收起，点击展开/收起
+$('toolsToggle').addEventListener('click', () => {
+  const panel = $('toolsPanel');
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? '' : 'none';
+  $('toolsToggle').textContent = open ? '收起数据管理' : '数据管理';
+});
+
 async function load() {
   const data = await api(`/api/records?page=${page}&size=${SIZE}`);
   const list = $('list');
+  $('recordCount').textContent = `共 ${data.total} 条记录`;
   if (!data.total) {
     list.innerHTML = '<div class="empty">还没有加油记录，点击右下角「+」开始记录</div>';
     $('pager').style.display = 'none';
@@ -58,32 +82,36 @@ async function load() {
   }
   list.innerHTML = data.items.map(r => `
     <div class="record-item">
-      <div class="line1">
-        <span class="date">${r.refuel_date} ${r.refuel_time}</span>
-        <span class="amount">¥${fmt(r.paid_amount)}</span>
+      <div class="record-main">
+        <div>
+          <div class="date">${r.refuel_date} <span>${r.refuel_time}</span></div>
+          <div class="record-place">${r.station ? h(r.station) : '未填写加油站'}</div>
+        </div>
+        <div class="amount">¥${fmt(r.paid_amount)}</div>
       </div>
-      <div class="line2">
-        <span>里程 ${fmt(r.odometer, 0)} km${r.distance_delta != null ? `（+${fmt(r.distance_delta, 0)}）` : ''}</span>
-        <span>${fmt(r.volume)} 升 × ${fmt(r.unit_price)} 元</span>
-        <span>机显 ¥${fmt(r.machine_amount)}</span>
-        ${r.station ? `<span>${h(r.station)}</span>` : ''}
+      <div class="record-facts">
+        <div><b>${fmt(r.odometer, 0)}</b><i>当前里程 km</i></div>
+        <div><b>${r.distance_delta != null ? '+' + fmt(r.distance_delta, 0) : '—'}</b><i>本次行驶 km</i></div>
+        <div><b>${fmt(r.volume)}</b><i>加油量 L</i></div>
+        <div><b>${fmt(r.unit_price)}</b><i>油价 元/L</i></div>
+        <div><b>¥${fmt(r.machine_amount)}</b><i>机显金额</i></div>
       </div>
       ${r.segment_consumption != null ? `
-      <div class="seg-metrics">
-        <span>🛢️ ${fmt(r.segment_consumption)} <i>升/百公里</i></span>
-        <span>💰 ${fmt(r.segment_cost_per_km)} <i>元/公里</i></span>
+      <div class="record-segment">
+        <div><b>${fmt(r.segment_consumption)}</b><i>升/百公里</i></div>
+        <div><b>${fmt(r.segment_cost_per_km)}</b><i>元/公里</i></div>
       </div>` : ''}
-      <div class="line3">
-        <span>
+      ${r.note ? `<div class="record-note">备注：${h(r.note)}</div>` : ''}
+      <div class="record-footer">
+        <span class="record-state">
           <span class="badge ${r.is_full ? 'full' : 'partial'}">${r.is_full ? '加满' : '未加满'}</span>
           <span class="hint">${h(r.fuel_type || '')}</span>
         </span>
-        <span>
+        <span class="record-actions">
           <a class="btn ghost sm" href="/record.html?id=${r.id}">编辑</a>
-          <button class="btn danger sm" onclick="del(${r.id}, '${r.refuel_date}')">删除</button>
+          <button class="btn danger sm" data-delete-id="${r.id}" data-delete-date="${r.refuel_date}">删除</button>
         </span>
       </div>
-      ${r.note ? `<div class="hint" style="margin-top:6px">备注：${h(r.note)}</div>` : ''}
     </div>
   `).join('');
 
@@ -105,6 +133,12 @@ async function del(id, date) {
     toast(ex.message || '删除失败', 'error');
   }
 }
+
+$('list').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-delete-id]');
+  if (!btn) return;
+  del(btn.dataset.deleteId, btn.dataset.deleteDate);
+});
 
 function setImportStatus(message) {
   $('importStatus').textContent = message || '';

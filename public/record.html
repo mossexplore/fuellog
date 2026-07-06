@@ -12,6 +12,8 @@
   <nav>
     <a href="/">仪表盘</a>
     <a href="/records.html">记录</a>
+    <a href="/account.html">账户</a>
+    <a href="/admin.html" id="navAdmin" style="display:none">管理</a>
     <a href="#" onclick="logout();return false;">登出</a>
   </nav>
 </header>
@@ -119,6 +121,28 @@ let attachments = []; // [{id, filename, content_type, size}]
 function fmtSize(n) {
   return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 }
+// ---------- 图片弹窗预览（点图放大，右上角 × 关闭） ----------
+function openLightbox(src) {
+  let box = $('lightbox');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'lightbox';
+    box.className = 'lightbox';
+    box.innerHTML = `<button type="button" class="lightbox-close" title="关闭" aria-label="关闭">×</button><img alt="">`;
+    box.addEventListener('click', (e) => { if (e.target !== box.querySelector('img')) closeLightbox(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
+    document.body.appendChild(box);
+  }
+  box.querySelector('img').src = src;
+  box.classList.add('show');
+  document.body.style.overflow = 'hidden'; // 弹窗期间禁止背景滚动
+}
+function closeLightbox() {
+  const box = $('lightbox');
+  if (box) { box.classList.remove('show'); box.querySelector('img').src = ''; }
+  document.body.style.overflow = '';
+}
+
 function renderAttachments() {
   const grid = $('attachGrid');
   grid.innerHTML = '';
@@ -127,7 +151,9 @@ function renderAttachments() {
     cell.className = 'attach-cell';
     const src = '/api/attachments/' + a.id;
     if (a.content_type && a.content_type.startsWith('image/')) {
-      cell.innerHTML = `<a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt=""></a>`;
+      // 图片：当前页弹窗放大预览，不再新开页面
+      cell.innerHTML = `<img src="${src}" alt="${a.filename || ''}" style="cursor:zoom-in">`;
+      cell.querySelector('img').addEventListener('click', () => openLightbox(src));
     } else {
       cell.innerHTML = `<a class="file-ico" href="${src}" target="_blank" rel="noopener" title="${a.filename}">
         <span class="ico">📄</span><span class="fn">${a.filename}</span></a>`;
