@@ -19,9 +19,11 @@
 用户浏览器
   ↓
 Cloudflare Worker
-  ├─ Workers Static Assets：前端 HTML / CSS / JS
+  ├─ Workers Static Assets：前端 HTML / CSS / JS、本地 Chart.js、本地 XLSX
   ├─ D1：用户、车辆、加油记录、会话、2FA、设置
-  └─ R2：加油票据、截图、附件
+  ├─ R2：加油票据、截图、附件
+  ├─ /ocr-model/*：代理公开 OCR 模型资源并边缘缓存
+  └─ SMTP：发送邮箱绑定和密码找回验证码
 ```
 
 ## 2. 准备事项
@@ -110,6 +112,28 @@ wrangler.jsonc
 ```jsonc
 "bucket_name": "fuellog-attachments"
 ```
+
+确认静态资源配置保留了 `run_worker_first`，用于让 `/assets/*` 资源经过 Worker 补充长期缓存响应头：
+
+```jsonc
+"assets": {
+  "directory": "./public",
+  "binding": "ASSETS",
+  "run_worker_first": ["/assets/*"]
+}
+```
+
+如果你已经有正式域名，也可以在 `wrangler.jsonc` 中增加非敏感变量：
+
+```jsonc
+"vars": {
+  "APP_ORIGIN": "https://car.example.com",
+  "MAIL_FROM": "your@qq.com",
+  "SMTP_USER": "your@qq.com"
+}
+```
+
+`APP_ORIGIN` 建议填写自己的正式访问地址；如果还没有绑定域名，可以先不填，代码会使用当前请求域名作为兜底。`SMTP_PASS` 不要写入 `wrangler.jsonc`，后面在 Cloudflare 控制台用 Secret 配置。
 
 如果你想给 Worker 换一个名字，也可以修改：
 
@@ -225,7 +249,44 @@ https://fuellog.<your-subdomain>.workers.dev
 - Worker name 与 `wrangler.jsonc` 的 `"name"` 不一致。
 - R2 bucket 名称与 `wrangler.jsonc` 不一致。
 
-## 10. 注册第一个账号
+## 10. 配置环境变量和邮箱 Secret
+
+如果只想先体验记录、统计、附件和导入导出，可以暂时跳过邮箱配置。跳过后，账户绑定邮箱和密码找回邮件无法发送。
+
+如需启用邮箱绑定和密码找回，使用 QQ 邮箱时先在 QQ 邮箱设置中开启 SMTP 服务，并生成授权码；授权码不是 QQ 登录密码。
+
+在 Cloudflare 控制台配置：
+
+1. 进入 `Workers & Pages`。
+2. 选择本项目 Worker。
+3. 进入 `Settings`。
+4. 找到 `Variables and Secrets`。
+5. 添加普通变量：
+
+   ```text
+   APP_ORIGIN=https://car.example.com
+   MAIL_FROM=your@qq.com
+   SMTP_USER=your@qq.com
+   ```
+
+6. 添加 Secret：
+
+   ```text
+   SMTP_PASS=你的 QQ 邮箱 SMTP 授权码
+   ```
+
+7. 可选添加普通变量：
+
+   ```text
+   SMTP_HOST=smtp.qq.com
+   SMTP_PORT=465
+   ```
+
+如果未设置 `SMTP_HOST` 和 `SMTP_PORT`，代码默认使用 `smtp.qq.com:465`。
+
+修改变量后重新部署一次 Worker，让配置生效。
+
+## 11. 注册第一个账号
 
 打开部署后的地址：
 
@@ -237,7 +298,7 @@ https://fuellog.<your-subdomain>.workers.dev/register.html
 
 注册完成后先不要急着正式使用，因为此时它还是普通用户。
 
-## 11. 把第一个账号提升为管理员
+## 12. 把第一个账号提升为管理员
 
 回到 Cloudflare D1 控制台，执行下面的 SQL。把 `admin` 替换成你刚注册的用户名：
 
@@ -255,7 +316,7 @@ SELECT id, username, role, enabled FROM users;
 
 看到该用户的 `role` 是 `admin` 即可。
 
-## 12. 关闭公开注册
+## 13. 关闭公开注册
 
 如果只是个人使用，建议创建管理员后立刻关闭注册。
 
@@ -269,7 +330,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 后续如需开放注册，可以由管理员登录应用，在管理页里打开“允许新用户注册”。
 
-## 13. 管理员首次登录和绑定 2FA
+## 14. 管理员首次登录和 2FA
 
 访问：
 
@@ -279,7 +340,7 @@ https://fuellog.<your-subdomain>.workers.dev/login.html
 
 用刚提升为管理员的账号登录。
 
-管理员首次登录时，系统会要求绑定两步验证：
+管理员可以在账户页按需绑定两步验证，强烈建议生产环境管理员启用：
 
 1. 使用 Google Authenticator、Microsoft Authenticator、1Password 等 App 扫描二维码。
 2. 输入 6 位验证码完成绑定。
@@ -287,7 +348,7 @@ https://fuellog.<your-subdomain>.workers.dev/login.html
 
 备用恢复码只显示一次，请立即保存到安全位置。
 
-## 14. 验证功能
+## 15. 验证功能
 
 建议按下面顺序检查：
 
@@ -299,8 +360,10 @@ https://fuellog.<your-subdomain>.workers.dev/login.html
 6. 查看仪表盘统计是否更新。
 7. 导出 CSV 是否正常。
 8. 如果需要普通用户注册，在管理页临时打开注册，再注册普通用户测试。
+9. 如已配置 SMTP，在账户页绑定邮箱，确认能收到 6 位验证码。
+10. 上传一张加油截图，确认 OCR 模型能加载且截图会保存为记录附件。
 
-## 15. 绑定自定义域名
+## 16. 绑定自定义域名
 
 如果只做测试，可以直接使用 `workers.dev` 地址。
 
@@ -322,7 +385,7 @@ car.example.com
 
 域名必须属于当前 Cloudflare 账号中可管理的 zone。
 
-## 16. 后续更新部署
+## 17. 后续更新部署
 
 使用 Workers Builds 连接 GitHub 后，后续只要 `main` 分支有新提交，Cloudflare 会自动构建和部署。
 
@@ -341,9 +404,15 @@ migrations/0002_xxx.sql
 
 需要先在 Cloudflare D1 控制台执行该迁移 SQL，再完成应用更新验证。
 
-## 17. 常见问题
+更新后可以用浏览器开发者工具或在线请求检查 `/assets/app.js` 的响应头，正常应包含：
 
-### 17.1 Import repository 后构建失败
+```text
+cache-control: public, max-age=31536000, immutable
+```
+
+## 18. 常见问题
+
+### 18.1 Import repository 后构建失败
 
 进入 Worker 的部署详情，查看 Build Logs。
 
@@ -354,13 +423,13 @@ migrations/0002_xxx.sql
 - `bucket_name` 是否等于实际 R2 bucket 名。
 - GitHub 仓库是否授权给了 Cloudflare。
 
-### 17.2 页面能打开，但登录后报数据库错误
+### 18.2 页面能打开，但登录后报数据库错误
 
 通常是 D1 还没有初始化表结构。
 
 回到 D1 控制台执行 `schema.sql`。
 
-### 17.3 注册页面提示注册关闭
+### 18.3 注册页面提示注册关闭
 
 在 D1 控制台执行：
 
@@ -372,7 +441,7 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 
 注册完第一个管理员后，记得再改回 `'0'`。
 
-### 17.4 管理员看不到管理入口
+### 18.4 管理员看不到管理入口
 
 可能是账号还没有提升为管理员。
 
@@ -390,7 +459,7 @@ UPDATE users SET role = 'admin', enabled = 1 WHERE username = '你的用户名';
 
 然后退出应用重新登录。
 
-### 17.5 附件上传失败
+### 18.5 附件上传失败
 
 检查 R2：
 
@@ -404,7 +473,7 @@ UPDATE users SET role = 'admin', enabled = 1 WHERE username = '你的用户名';
 R2
 ```
 
-### 17.6 不想把真实 database_id 提交到原始仓库
+### 18.6 不想把真实 database_id 提交到原始仓库
 
 正确做法是：
 
@@ -412,16 +481,16 @@ R2
 2. 只在自己的 fork 中填写真实 `database_id`。
 3. 不要向原始仓库提交包含真实 `database_id` 的 Pull Request。
 
-## 18. 安全注意事项
+## 19. 安全注意事项
 
 - 不要公开 Cloudflare API Token。
-- 不要公开 D1 数据库 ID、账号密码、Cookie、Session、2FA 密钥、备用恢复码。
+- 不要公开 D1 数据库 ID、账号密码、Cookie、Session、2FA 密钥、备用恢复码、邮箱 SMTP 授权码。
 - R2 bucket 保持私有，不要设置 Public Bucket。
 - 第一个管理员创建完成后关闭注册。
-- 管理员必须绑定 2FA，并妥善保存备用恢复码。
+- 生产环境建议管理员绑定 2FA，并妥善保存备用恢复码。
 - 多人部署时，每个人使用自己的 D1、R2、Worker 和域名，不要共用生产资源。
 
-## 19. 参考资料
+## 20. 参考资料
 
 - Cloudflare Workers Builds：https://developers.cloudflare.com/workers/ci-cd/builds/
 - Workers Builds 配置：https://developers.cloudflare.com/workers/ci-cd/builds/configuration/

@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>管理 · 加油记</title>
-<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/style.css?v=20260707">
 </head>
 <body>
 <header class="topbar">
   <a class="brand" href="/">⛽ 加油记</a>
   <nav>
     <a href="/">仪表盘</a>
-    <a href="/records.html">记录</a>
-    <a href="/account.html">账户</a>
-    <a href="/admin.html" class="active">管理</a>
+    <a href="/records">记录</a>
+    <a href="/account">账户</a>
+    <a href="/admin" class="active">管理</a>
     <a href="#" onclick="logout();return false;">登出</a>
   </nav>
 </header>
@@ -50,7 +50,7 @@
   </div>
 </div>
 
-<script src="/assets/app.js"></script>
+<script src="/assets/app.js?v=20260707"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let meId = null;

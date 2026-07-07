@@ -2,7 +2,7 @@
 
 本文面向从 GitHub 拉取本项目代码、并在自己的 Cloudflare 账号中部署“加油记”的协作者。
 
-项目使用 Cloudflare Workers 承载后端 API 和静态前端资源，使用 D1 保存结构化数据，使用 R2 保存加油票据、截图等附件。
+项目使用 Cloudflare Workers 承载后端 API 和静态前端资源，使用 D1 保存结构化数据，使用 R2 保存加油票据、截图等附件。截图 OCR 在浏览器本地执行，Worker 只代理公开 OCR 模型资源并做缓存；邮箱绑定和密码找回通过 SMTP 发送 6 位验证码。
 
 ## 1. 准备条件
 
@@ -179,7 +179,7 @@ https://fuellog.<your-subdomain>.workers.dev
 
 打开该地址即可访问。
 
-首次使用管理员账号登录时，如果管理员尚未绑定两步验证，系统会引导绑定 Authenticator，并生成备用恢复码。
+首次使用管理员账号登录后，可在账户页按需绑定 Authenticator 两步验证，并保存备用恢复码。
 
 ## 9. 验证部署结果
 
@@ -187,12 +187,14 @@ https://fuellog.<your-subdomain>.workers.dev
 
 1. 打开 Workers 地址，确认自动进入登录页。
 2. 用管理员账号和初始密码登录。
-3. 按提示绑定两步验证，并保存备用恢复码。
+3. 如需启用两步验证，在账户页绑定 Authenticator，并保存备用恢复码。
 4. 进入仪表盘，确认页面能正常加载。
 5. 新增一条加油记录，确认记录可保存。
 6. 上传一张附件，确认附件可预览或下载。
 7. 进入记录页，确认 CSV 导出可用。
 8. 如需开放注册，用管理员进入管理页打开“允许新用户注册”。
+9. 如已配置 SMTP，在账户页绑定邮箱，确认能收到 6 位验证码。
+10. 上传一张加油截图，确认 OCR 模型能加载且截图会保存为记录附件。
 
 ## 10. 绑定自定义域名
 
@@ -225,7 +227,110 @@ car.example.com
 
 如果协作者只是部署自己的实例，请把域名替换为自己的域名，不要复用他人的生产域名。
 
-## 11. 后续更新部署
+## 11. 邮箱、站点与 OCR 配置
+
+### 11.1 `APP_ORIGIN`
+
+建议把 `APP_ORIGIN` 配置为生产访问地址，例如：
+
+```text
+https://car.example.com
+```
+
+它用于生成应用公开地址，并供 OCR 模型代理在特殊场景下定位当前部署实例。如果不配置，服务端会自动使用当前请求域名作为兜底。
+
+可以在 `wrangler.jsonc` 中配置非敏感变量：
+
+```jsonc
+"vars": {
+  "APP_ORIGIN": "https://car.example.com"
+}
+```
+
+如果同一份代码会部署到多个环境，也可以在 Cloudflare 控制台的 Worker Variables 中分别配置。
+
+### 11.2 QQ 邮箱 SMTP
+
+邮箱绑定和密码找回会向用户邮箱发送 6 位数字验证码。使用 QQ 邮箱时，需要先在 QQ 邮箱设置中开启 SMTP 服务，并生成授权码；授权码不是 QQ 登录密码。
+
+`SMTP_PASS` 必须用 Secret 保存：
+
+```bash
+npx wrangler secret put SMTP_PASS
+```
+
+按提示粘贴 QQ 邮箱 SMTP 授权码。
+
+其他非敏感变量可以写入 `wrangler.jsonc` 的 `vars`，也可以在 Cloudflare 控制台配置：
+
+```jsonc
+"vars": {
+  "APP_ORIGIN": "https://car.example.com",
+  "MAIL_FROM": "your@qq.com",
+  "SMTP_USER": "your@qq.com"
+}
+```
+
+可选变量：
+
+```text
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+```
+
+如果未设置，代码默认使用 `smtp.qq.com:465`。不要把 `SMTP_PASS` 写进 `wrangler.jsonc`、README、截图或聊天记录中。
+
+配置完成后重新部署：
+
+```bash
+npm run deploy
+```
+
+### 11.3 OCR 模型代理
+
+上传截图自动识别时，识别计算在用户浏览器本地完成，截图不会上传到云端 OCR 服务。浏览器需要下载公开 OCR 模型文件；为避免部分网络环境无法访问 `raw.githubusercontent.com`，本项目提供：
+
+```text
+/ocr-model/*
+```
+
+该路径由 Worker 代理到上游公开模型资源，并在 Cloudflare 边缘缓存一天。前端会自动把 OCR 库发起的模型请求改写到当前部署域名下的 `/ocr-model/*`，不需要在前端代码里写死生产域名。
+
+如需本地直接用 `file://` 打开页面并测试 OCR，可以在浏览器控制台临时设置：
+
+```js
+localStorage.setItem('FUELLOG_APP_ORIGIN', 'https://你的部署域名');
+```
+
+正常通过 `npm run dev` 或生产域名访问时不需要设置。
+
+### 11.4 静态资源缓存
+
+核心前端依赖已经本地化：`public/assets/chart.umd.min.js` 用于图表，`public/assets/xlsx.full.min.js` 用于腾讯出行 XLSX 导入。XLSX 仅在用户点击导入腾讯出行文件时按需加载。
+
+`wrangler.jsonc` 中的 `assets.run_worker_first` 让 `/assets/*` 先进入 Worker，从而给 JS、CSS、Chart.js、XLSX 等静态资源补充长期缓存响应头：
+
+```jsonc
+"assets": {
+  "directory": "./public",
+  "binding": "ASSETS",
+  "run_worker_first": ["/assets/*"]
+}
+```
+
+不要随意删除这段配置。部署后可检查缓存是否生效：
+
+```bash
+curl -I https://你的域名/assets/app.js
+```
+
+正常应能看到：
+
+```text
+cache-control: public, max-age=31536000, immutable
+```
+
+## 12. 后续更新部署
 
 后续从 GitHub 获取最新代码并重新部署：
 
@@ -245,7 +350,7 @@ npx wrangler d1 execute fuellog --remote --file=migrations/xxxx.sql
 npm run deploy
 ```
 
-## 12. 本地开发和预览
+## 13. 本地开发和预览
 
 初始化本地 D1：
 
@@ -275,7 +380,7 @@ http://localhost:8787
 
 本地 D1 和远程 D1 是分开的。本地调试不会修改生产数据。
 
-## 13. 敏感信息处理规范
+## 14. 敏感信息处理规范
 
 不要提交以下内容：
 
@@ -283,6 +388,7 @@ http://localhost:8787
 - Cloudflare API Token。
 - `.dev.vars`、`.env`、`.env.*`。
 - `user.sql`。
+- `SMTP_PASS` 或邮箱授权码。
 - 明文密码。
 - 登录 Cookie、Session Token。
 - 2FA 密钥、备用恢复码。
@@ -302,9 +408,9 @@ git diff --check
 rm user.sql
 ```
 
-## 14. 常见问题
+## 15. 常见问题
 
-### 14.1 部署时报 `database_id` 无效
+### 15.1 部署时报 `database_id` 无效
 
 检查 `wrangler.jsonc` 是否仍然是占位值：
 
@@ -314,7 +420,7 @@ rm user.sql
 
 需要替换为 `npx wrangler d1 create fuellog` 输出的真实 ID。
 
-### 14.2 登录时报数据库表不存在
+### 15.2 登录时报数据库表不存在
 
 通常是忘记初始化远程数据库。执行：
 
@@ -324,7 +430,7 @@ npm run db:init:remote
 
 如果是旧库升级，按发布说明执行对应 `migrations/` 文件。
 
-### 14.3 附件上传失败
+### 15.3 附件上传失败
 
 检查 R2 bucket 是否存在，且 `wrangler.jsonc` 中的 bucket 名称是否一致：
 
@@ -338,7 +444,7 @@ npx wrangler r2 bucket list
 "binding": "R2"
 ```
 
-### 14.4 管理员无法进入管理页
+### 15.4 管理员无法进入管理页
 
 确认用户的 `role` 是 `admin`。
 
@@ -350,11 +456,11 @@ npx wrangler r2 bucket list
 npx wrangler d1 execute fuellog --remote --command "SELECT id, username, role, enabled FROM users;"
 ```
 
-### 14.5 普通用户无法注册
+### 15.5 普通用户无法注册
 
 注册默认关闭。管理员登录后进入管理页，打开“允许新用户注册”。
 
-### 14.6 不想把真实 `database_id` 改进 Git
+### 15.6 不想把真实 `database_id` 改进 Git
 
 真实 `database_id` 不属于密码，但它是部署环境信息。多人协作时建议：
 
@@ -362,7 +468,7 @@ npx wrangler d1 execute fuellog --remote --command "SELECT id, username, role, e
 2. 提交前运行 `git diff wrangler.jsonc` 检查。
 3. 如果需要 CI/CD，优先在 CI 中生成临时 Wrangler 配置文件，或使用独立的私有部署配置。
 
-## 15. 参考资料
+## 16. 参考资料
 
 - Cloudflare Workers 文档：https://developers.cloudflare.com/workers/
 - Wrangler 文档：https://developers.cloudflare.com/workers/wrangler/

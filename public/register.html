@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>注册 · 加油记</title>
-<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/style.css?v=20260707">
 </head>
 <body>
 <div class="login-wrap">
@@ -12,7 +12,7 @@
   <div class="card">
     <div id="closed" style="display:none">
       <p class="hint" style="text-align:center">注册当前已关闭，请联系管理员。</p>
-      <a class="btn ghost block" href="/login.html" style="margin-top:12px">返回登录</a>
+      <a class="btn ghost block" href="/login" style="margin-top:12px">返回登录</a>
     </div>
 
     <form id="regForm" style="display:none">
@@ -43,12 +43,12 @@
       <button class="btn block" type="submit" id="regBtn">注册</button>
       <div class="auth-alt">
         <span>已有账号？</span>
-        <a class="btn ghost block" href="/login.html">返回登录</a>
+        <a class="btn ghost block" href="/login">返回登录</a>
       </div>
     </form>
   </div>
 </div>
-<script src="/assets/app.js"></script>
+<script src="/assets/app.js?v=20260707"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let captchaId = '';
@@ -76,7 +76,7 @@ $('regForm').addEventListener('submit', async (e) => {
       captcha_id: captchaId, captcha_text: $('captchaInput').value.trim(),
     }) });
     toast('注册成功，请登录');
-    setTimeout(() => location.href = '/login.html', 1000);
+    setTimeout(() => location.href = '/login', 1000);
   } catch (ex) {
     err.textContent = ex.message;
     loadCaptcha();

@@ -31,8 +31,15 @@ const ISSUER = '加油记';
 const OCR_MODEL_RAW_BASE = 'https://raw.githubusercontent.com/PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models/main/';
 const OCR_MODEL_CDN_BASE = 'https://cdn.jsdelivr.net/gh/PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models@main/';
 const OCR_MODEL_PATH_RE = /^[A-Za-z0-9_./-]+\.(txt|json|onnx|wasm)$/;
+function appOrigin(c: any): string {
+  const configured = String(c.env.APP_ORIGIN ?? '').trim().replace(/\/+$/, '');
+  if (configured) return configured;
+  const url = new URL(c.req.url);
+  return `${url.protocol}//${url.host}`;
+}
 // 未登录即可访问的认证接口（登录两步流程）
 const PUBLIC_PATHS = new Set([
+  '/api/app-config',
   '/api/login',
   '/api/login/verify',
   '/api/2fa/enroll',
@@ -42,6 +49,18 @@ const PUBLIC_PATHS = new Set([
   '/api/password/reset',
 ]);
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
+
+app.get('/assets/*', async (c) => {
+  const res = await c.env.ASSETS.fetch(c.req.raw);
+  if (!res.ok) return res;
+  const headers = new Headers(res.headers);
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+});
+
+app.get('/api/app-config', (c) => {
+  return c.json({ app_origin: appOrigin(c) });
+});
 
 // ---------- 认证中间件（登录相关接口除外） ----------
 

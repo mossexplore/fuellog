@@ -19,7 +19,7 @@ async function api(path, options = {}) {
     : { 'Content-Type': 'application/json', ...(options.headers || {}) };
   const res = await fetch(path, { ...options, headers });
   if (res.status === 401 && !location.pathname.startsWith('/login')) {
-    location.href = '/login.html';
+    location.href = '/login';
     throw new Error('unauthorized');
   }
   const data = await res.json().catch(() => ({}));
@@ -35,7 +35,7 @@ function fmt(n, digits = 2) {
 async function logout() {
   sessionStorage.removeItem('fuellog_role');
   await api('/api/logout', { method: 'POST' });
-  location.href = '/login.html';
+  location.href = '/login';
 }
 
 // 登录态页面：管理员显示「管理」导航（元素 id=navAdmin，默认隐藏）。
@@ -57,7 +57,15 @@ if (!/\/(login|register|forgot-password|reset-password)(\.html)?$/.test(location
 
 function pageKey(pathname) {
   if (pathname === '/' || pathname.endsWith('/index.html')) return '/';
-  return pathname;
+  return pathname.replace(/\.html$/, '');
+}
+
+function scriptPathname(src) {
+  try { return new URL(src, location.href).pathname; } catch { return src || ''; }
+}
+
+function isAppScript(src) {
+  return scriptPathname(src).endsWith('/assets/app.js');
 }
 
 function updateTopbarActive(pathname) {
@@ -86,7 +94,7 @@ function ensureScript(src, attrs = {}) {
 async function runPageScripts(doc) {
   for (const source of doc.body.querySelectorAll('script')) {
     const src = source.getAttribute('src');
-    if (src && src.endsWith('/assets/app.js')) continue;
+    if (src && isAppScript(src)) continue;
     if (src) {
       await ensureScript(src, source.type ? { type: source.type } : {});
       continue;
@@ -109,13 +117,13 @@ function replacePageBody(doc) {
   document.querySelectorAll('#lightbox').forEach((x) => x.remove());
   [...document.body.children].forEach((el) => {
     if (el.classList.contains('topbar')) return;
-    if (el.tagName === 'SCRIPT' && el.getAttribute('src')?.endsWith('/assets/app.js')) return;
+    if (el.tagName === 'SCRIPT' && isAppScript(el.getAttribute('src'))) return;
     if (el.id === 'toast') return;
     el.remove();
   });
 
   const appScript = [...document.body.querySelectorAll('script')]
-    .find((s) => s.getAttribute('src')?.endsWith('/assets/app.js'));
+    .find((s) => isAppScript(s.getAttribute('src')));
   const nodes = [...doc.body.children].filter((el) => el.tagName !== 'SCRIPT' && !el.classList.contains('topbar'));
   for (const node of nodes) document.body.insertBefore(document.importNode(node, true), appScript || null);
 }
@@ -153,7 +161,7 @@ function shouldHandleShellClick(e, a) {
   const url = new URL(href, location.href);
   if (url.origin !== location.origin) return false;
   if (url.pathname === location.pathname && url.search === location.search) return false;
-  return /\.(html)?$/.test(url.pathname) || url.pathname === '/';
+  return ['/', '/records', '/record', '/account', '/admin'].includes(pageKey(url.pathname));
 }
 
 function setupAppShellNav() {

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · 加油记</title>
-<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/style.css?v=20260707">
 </head>
 <body>
 <div class="login-wrap">
@@ -30,10 +30,10 @@
       </div>
       <div class="error" id="pwError"></div>
       <button class="btn block" type="submit" id="pwBtn">登录</button>
-      <div class="auth-forgot"><a href="/forgot-password.html">忘记密码？</a></div>
+      <div class="auth-forgot"><a href="/forgot-password">忘记密码？</a></div>
       <div class="auth-alt">
         <span>还没有账号？</span>
-        <a class="btn ghost block" href="/register.html">创建账号</a>
+        <a class="btn ghost block" href="/register">创建账号</a>
       </div>
     </form>
 
@@ -81,7 +81,7 @@
   </div>
 </div>
 <script src="/assets/qrcode.min.js"></script>
-<script src="/assets/app.js"></script>
+<script src="/assets/app.js?v=20260707"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const show = (id) => { for (const s of ['pwForm','totpForm','enrollForm','backupStep']) $(s).style.display = s === id ? '' : 'none'; };

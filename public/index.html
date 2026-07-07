@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>仪表盘 · 加油记</title>
-<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/style.css?v=20260707">
 </head>
 <body>
 <header class="topbar">
   <a class="brand" href="/">⛽ 加油记</a>
   <nav>
     <a href="/" class="active">仪表盘</a>
-    <a href="/records.html">记录</a>
-    <a href="/account.html">账户</a>
-    <a href="/admin.html" id="navAdmin" style="display:none">管理</a>
+    <a href="/records">记录</a>
+    <a href="/account">账户</a>
+    <a href="/admin" id="navAdmin" style="display:none">管理</a>
     <a href="#" onclick="logout();return false;">登出</a>
   </nav>
 </header>
@@ -66,10 +66,10 @@
   </div>
 </div>
 
-<a class="fab" href="/record.html" title="记一笔">+</a>
+<a class="fab" href="/record" title="记一笔">+</a>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<script src="/assets/app.js"></script>
+<script src="/assets/chart.umd.min.js?v=4.4.3"></script>
+<script src="/assets/app.js?v=20260707"></script>
 <script>
 (async () => {
   const s = await api('/api/stats');

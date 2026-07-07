@@ -9,10 +9,33 @@ const OCR_MODEL_PROXY_BASE = '/ocr-model/';
 let _service = null;
 let _loading = null;
 let _fetchPatched = false;
+let _appOrigin = '';
+
+function normalizeOrigin(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+async function loadAppOrigin() {
+  if (_appOrigin) return _appOrigin;
+  const configured = normalizeOrigin(globalThis.FUELLOG_APP_ORIGIN);
+  if (configured) {
+    _appOrigin = configured;
+    return _appOrigin;
+  }
+  const stored = normalizeOrigin(localStorage.getItem('FUELLOG_APP_ORIGIN'));
+  if (stored) {
+    _appOrigin = stored;
+    return _appOrigin;
+  }
+  if (location.protocol !== 'file:') {
+    _appOrigin = normalizeOrigin(location.origin);
+    return _appOrigin;
+  }
+  throw new Error('请通过部署域名访问后再使用截图识别');
+}
 
 function modelProxyUrl(path) {
-  const base = location.protocol === 'file:' ? 'https://car.weyun.top' : location.origin;
-  return `${base}${OCR_MODEL_PROXY_BASE}${path}`;
+  return `${_appOrigin}${OCR_MODEL_PROXY_BASE}${path}`;
 }
 
 function rewriteFetchInput(input, url) {
@@ -51,6 +74,7 @@ function loadOcr(onStatus) {
   if (_service) return Promise.resolve(_service);
   if (_loading) return _loading;
   _loading = (async () => {
+    await loadAppOrigin();
     patchOcrModelFetch();
     onStatus && onStatus('识别模型加载中，请稍候…');
     const mod = await import(/* @vite-ignore */ OCR_CDN);

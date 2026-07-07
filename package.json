@@ -15,7 +15,11 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250601.0",
+    "gifenc": "^1.0.3",
+    "omggif": "^1.0.10",
     "opentype.js": "^2.0.0",
+    "pngjs": "^7.0.0",
+    "puppeteer-core": "^25.3.0",
     "typescript": "^5.5.0",
     "wrangler": "^4.0.0"
   }

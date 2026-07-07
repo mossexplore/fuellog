@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>账户 · 加油记</title>
-<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/style.css?v=20260707">
 </head>
 <body>
 <header class="topbar">
   <a class="brand" href="/">⛽ 加油记</a>
   <nav>
     <a href="/">仪表盘</a>
-    <a href="/records.html">记录</a>
-    <a href="/account.html" class="active">账户</a>
-    <a href="/admin.html" id="navAdmin" style="display:none">管理</a>
+    <a href="/records">记录</a>
+    <a href="/account" class="active">账户</a>
+    <a href="/admin" id="navAdmin" style="display:none">管理</a>
     <a href="#" onclick="logout();return false;">登出</a>
   </nav>
 </header>
@@ -87,7 +87,7 @@
 </div>
 
 <script src="/assets/qrcode.min.js"></script>
-<script src="/assets/app.js"></script>
+<script src="/assets/app.js?v=20260707"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let isAdmin = false;
