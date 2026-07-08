@@ -4,11 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>注册 · 加油记</title>
-<link rel="stylesheet" href="/assets/style.css?v=20260707">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css?v=20260708e">
 </head>
 <body>
 <div class="login-wrap">
-  <h1>⛽ 加油记</h1>
+  <div class="login-brand">
+    <div class="login-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" x2="15" y1="22" y2="22"></line><line x1="4" x2="14" y1="9" y2="9"></line><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"></path><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2 2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"></path></svg></div>
+    <h1>加油记</h1>
+    <p>创建账号，开始记录油耗</p>
+  </div>
   <div class="card">
     <div id="closed" style="display:none">
       <p class="hint" style="text-align:center">注册当前已关闭，请联系管理员。</p>
@@ -48,7 +54,7 @@
     </form>
   </div>
 </div>
-<script src="/assets/app.js?v=20260707"></script>
+<script src="/assets/app.js?v=20260708-nav"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let captchaId = '';

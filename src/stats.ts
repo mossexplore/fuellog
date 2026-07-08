@@ -86,5 +86,11 @@ export function computeStats(records: FuelRecord[]) {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([month, dist]) => ({ month, distance_km: r2(dist) })),
     price_trend: records.map((r) => ({ date: r.refuel_date, price: r.unit_price })),
+    // 逐次加油序列：每次加油的实付金额，以及相对上一条记录新增的里程
+    refuels: records.map((r, i) => ({
+      date: r.refuel_date,
+      paid_yuan: r2(r.paid_amount),
+      distance_km: i > 0 ? r2(r.odometer - records[i - 1].odometer) : null,
+    })),
   };
 }

@@ -12,6 +12,47 @@ window.addEventListener('unhandledrejection', (event) => {
   if (isStaleDomWriteError(event.reason?.message || event.reason)) event.preventDefault();
 });
 
+let currentPageController = null;
+let currentPageCleanups = [];
+function addPageCleanup(fn) {
+  if (typeof fn === 'function') currentPageCleanups.push(fn);
+}
+function startPageLifecycle() {
+  currentPageController = new AbortController();
+  window.__fuellogPageSignal = currentPageController.signal;
+  window.fuellogOnPageDispose = addPageCleanup;
+}
+function disposePageLifecycle() {
+  if (currentPageController && !currentPageController.signal.aborted) currentPageController.abort();
+  const cleanups = currentPageCleanups;
+  currentPageCleanups = [];
+  for (let i = cleanups.length - 1; i >= 0; i -= 1) {
+    try { cleanups[i](); } catch (_) { /* 页面清理失败不影响导航 */ }
+  }
+}
+let persistentListenerSetup = false;
+function withPersistentListeners(fn) {
+  persistentListenerSetup = true;
+  try { return fn(); }
+  finally { persistentListenerSetup = false; }
+}
+function installScopedPageListeners() {
+  if (window.__fuellogScopedPageListeners) return;
+  window.__fuellogScopedPageListeners = true;
+  const nativeAdd = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function(type, listener, options) {
+    const signal = window.__fuellogPageSignal;
+    if (!persistentListenerSetup && signal && !signal.aborted && listener && !options?.signal) {
+      if (options == null) options = { signal };
+      else if (typeof options === 'boolean') options = { capture: options, signal };
+      else options = { ...options, signal };
+    }
+    return nativeAdd.call(this, type, listener, options);
+  };
+}
+startPageLifecycle();
+installScopedPageListeners();
+
 async function api(path, options = {}) {
   // FormData 由浏览器自动设置 multipart 边界，不能手动指定 Content-Type
   const headers = options.body instanceof FormData
@@ -40,19 +81,35 @@ async function logout() {
 
 // 登录态页面：管理员显示「管理」导航（元素 id=navAdmin，默认隐藏）。
 // 角色缓存在 sessionStorage：进页面立即按缓存显示，避免顶栏在异步请求后跳动，再异步校准。
-async function revealAdminNav() {
+let meRequest = null;
+function applyAdminNavRole(role) {
   const a = document.getElementById('navAdmin');
-  if (a && sessionStorage.getItem('fuellog_role') === 'admin') a.style.display = '';
+  if (a) a.style.display = role === 'admin' ? '' : 'none';
+}
+async function revealAdminNav() {
+  const cachedRole = sessionStorage.getItem('fuellog_role') || '';
+  const checkedAt = Number(sessionStorage.getItem('fuellog_role_checked') || 0);
+  if (cachedRole) applyAdminNavRole(cachedRole);
+  if (cachedRole && Date.now() - checkedAt < 30000) return { role: cachedRole, cached: true };
   try {
-    const me = await api('/api/me');
+    if (!meRequest) {
+      meRequest = api('/api/me').finally(() => { meRequest = null; });
+    }
+    const me = await meRequest;
     sessionStorage.setItem('fuellog_role', me.role || '');
-    if (a) a.style.display = me.role === 'admin' ? '' : 'none';
+    sessionStorage.setItem('fuellog_role_checked', String(Date.now()));
+    applyAdminNavRole(me.role || '');
+    return me;
   } catch (_) { /* 未登录等，忽略 */ }
+  return null;
 }
 if (!/\/(login|register|forgot-password|reset-password)(\.html)?$/.test(location.pathname)) {
   document.readyState === 'loading'
-    ? document.addEventListener('DOMContentLoaded', () => { revealAdminNav(); setupAppShellNav(); })
-    : (revealAdminNav(), setupAppShellNav());
+    ? withPersistentListeners(() => document.addEventListener('DOMContentLoaded', () => {
+        withPersistentListeners(setupAppShellNav);
+        revealAdminNav();
+      }))
+    : (withPersistentListeners(setupAppShellNav), revealAdminNav());
 }
 
 function pageKey(pathname) {
@@ -128,27 +185,58 @@ function replacePageBody(doc) {
   for (const node of nodes) document.body.insertBefore(document.importNode(node, true), appScript || null);
 }
 
+let navSeq = 0;
+let navController = null;
+const htmlCache = new Map();
+const htmlRequests = new Map();
+async function fetchShellHtml(url, signal) {
+  const key = url.href;
+  const cached = htmlCache.get(key);
+  if (cached && Date.now() - cached.at < 15000) return cached.html;
+  if (htmlRequests.has(key)) return htmlRequests.get(key);
+  const request = fetch(key, { headers: { Accept: 'text/html' }, signal })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`请求失败 (${res.status})`);
+      const html = await res.text();
+      htmlCache.set(key, { html, at: Date.now() });
+      return html;
+    })
+    .finally(() => htmlRequests.delete(key));
+  htmlRequests.set(key, request);
+  return request;
+}
+function prefetchShellPage(url) {
+  const target = new URL(url, location.href);
+  if (htmlCache.has(target.href)) return;
+  fetchShellHtml(target, undefined).catch(() => {});
+}
+
 async function navigateWithinShell(url, { push = true } = {}) {
   const target = new URL(url, location.href);
+  const seq = ++navSeq;
+  if (navController) navController.abort();
+  navController = new AbortController();
   document.body.classList.add('app-loading');
   try {
-    const res = await fetch(target.href, { headers: { Accept: 'text/html' } });
-    if (!res.ok) throw new Error(`请求失败 (${res.status})`);
-    const html = await res.text();
+    const html = await fetchShellHtml(target, navController.signal);
+    if (seq !== navSeq) return;
     const doc = new DOMParser().parseFromString(html, 'text/html');
     if (!doc.querySelector('.topbar')) throw new Error('页面结构不完整');
 
     if (push) history.pushState({ shell: true }, '', target.href);
     document.title = doc.title;
+    disposePageLifecycle();
+    startPageLifecycle();
     replacePageBody(doc);
     updateTopbarActive(target.pathname);
-    await revealAdminNav();
+    revealAdminNav();
     await runPageScripts(doc);
     window.scrollTo(0, 0);
   } catch (ex) {
+    if (ex.name === 'AbortError' || seq !== navSeq) return;
     location.href = target.href;
   } finally {
-    document.body.classList.remove('app-loading');
+    if (seq === navSeq) document.body.classList.remove('app-loading');
   }
 }
 
@@ -175,6 +263,11 @@ function setupAppShellNav() {
     e.preventDefault();
     navigateWithinShell(a.href);
   });
+  document.addEventListener('pointerdown', (e) => {
+    const a = e.target.closest('.topbar a');
+    if (!a || !shouldHandleShellClick(e, a)) return;
+    prefetchShellPage(a.href);
+  }, { passive: true });
   window.addEventListener('popstate', () => navigateWithinShell(location.href, { push: false }));
 }
 

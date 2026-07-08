@@ -4,27 +4,53 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>记一笔 · 加油记</title>
-<link rel="stylesheet" href="/assets/style.css?v=20260707">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css?v=20260708-record8">
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="/">⛽ 加油记</a>
+  <a class="brand" href="/">
+    <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" x2="15" y1="22" y2="22"></line><line x1="4" x2="14" y1="9" y2="9"></line><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"></path><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2 2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"></path></svg></span>
+    加油记
+  </a>
   <nav>
     <a href="/">仪表盘</a>
     <a href="/records">记录</a>
     <a href="/account">账户</a>
-    <a href="/admin" id="navAdmin" style="display:none">管理</a>
-    <a href="#" onclick="logout();return false;">登出</a>
   </nav>
 </header>
 
 <div class="container">
-  <div class="card">
-    <form id="recordForm">
+  <form id="recordForm" class="record-form">
+    <section class="record-section record-section-ocr">
+      <div class="record-section-head">
+        <span class="record-section-kicker">01</span>
+        <h2>账单/截图识别</h2>
+      </div>
+      <p class="record-section-note">上传加油账单后，会自动识别并填充下方加油信息。</p>
+
       <div class="ocr-box">
-        <button type="button" class="btn ghost block" id="ocrBtn">📷 上传截图自动识别</button>
+        <button type="button" class="btn ghost block" id="ocrBtn">上传截图识别</button>
         <input type="file" id="ocrInput" accept="image/*" hidden>
         <div class="ocr-status" id="ocrStatus"></div>
+      </div>
+
+      <div class="form-group">
+        <label>账单/截图</label>
+        <div class="uploader">
+          <label class="upload-btn" for="fileInput">选择文件</label>
+          <input type="file" id="fileInput" multiple hidden>
+          <span class="hint" id="uploadHint">单个文件 ≤ 10MB，最多 9 个</span>
+        </div>
+        <div class="attach-grid" id="attachGrid"></div>
+      </div>
+    </section>
+
+    <section class="record-section">
+      <div class="record-section-head">
+        <span class="record-section-kicker">02</span>
+        <h2>加油信息</h2>
       </div>
 
       <div class="form-row">
@@ -60,14 +86,6 @@
         </div>
       </div>
 
-      <div class="switch-row">
-        <label class="required" for="is_full" style="margin:0;color:var(--text)">是否加满跳枪</label>
-        <label class="switch">
-          <input type="checkbox" id="is_full" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-
       <div class="form-row">
         <div class="form-group">
           <label class="required" for="fuel_type">油品标号</label>
@@ -76,38 +94,46 @@
           </select>
         </div>
         <div class="form-group">
-          <label for="station">加油站（可选）</label>
-          <input type="text" id="station" maxlength="50">
+          <label class="required" for="is_full">是否加满跳枪</label>
+          <div class="switch-field">
+            <span>加满</span>
+            <label class="switch">
+              <input type="checkbox" id="is_full" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
       </div>
 
+      <div class="form-row">
+        <div class="form-group">
+          <label for="station">加油站（可选）</label>
+          <input type="text" id="station" maxlength="50">
+        </div>
+        <div class="form-group">
+          <label for="note">备注（可选）</label>
+          <input type="text" id="note" maxlength="200">
+        </div>
+      </div>
+    </section>
+
+    <section class="record-section record-section-mileage">
+      <div class="record-section-head">
+        <span class="record-section-kicker">03</span>
+        <h2>当前里程</h2>
+      </div>
       <div class="form-group">
         <label class="required" for="odometer">当前里程（公里）</label>
         <input type="number" id="odometer" inputmode="decimal" step="0.1" min="0" required placeholder="仪表盘累计里程">
       </div>
+    </section>
 
-      <div class="form-group">
-        <label for="note">备注（可选）</label>
-        <input type="text" id="note" maxlength="200">
-      </div>
-
-      <div class="form-group">
-        <label>账单/截图（可选，可多选）</label>
-        <div class="uploader">
-          <label class="upload-btn" for="fileInput">📎 选择文件…</label>
-          <input type="file" id="fileInput" multiple hidden>
-          <span class="hint" id="uploadHint">单个文件 ≤ 10MB，最多 9 个</span>
-        </div>
-        <div class="attach-grid" id="attachGrid"></div>
-      </div>
-
-      <div class="error" id="error"></div>
-      <button class="btn block" type="submit" id="submitBtn">保存</button>
-    </form>
-  </div>
+    <div class="error" id="error"></div>
+    <button class="btn block" type="submit" id="submitBtn">保存</button>
+  </form>
 </div>
 
-<script src="/assets/app.js?v=20260707"></script>
+<script src="/assets/app.js?v=20260708-nav"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const editId = new URLSearchParams(location.search).get('id');
